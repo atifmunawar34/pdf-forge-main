@@ -6,7 +6,7 @@
 |--------|---------|
 | `main` | Stable release — only merges from `dev` after review |
 | `dev` | Shared integration branch — all work merges here first |
-| `dev/<name>` | Your personal working branch |
+| `<name>` (e.g. `talha`) | Your personal working branch, based off `dev` |
 
 ## Workflow
 
@@ -16,10 +16,10 @@
    cd pdf-forge-main
    ```
 
-2. **Switch to your personal branch**
+2. **Switch to your personal branch** (created off `dev` — ask an admin if yours doesn't exist, or make one: `git checkout -b <your-name> origin/dev && git push -u origin <your-name>`)
    ```bash
-   git checkout dev/<your-name>
-   git pull origin dev/<your-name>
+   git checkout <your-name>
+   git pull origin <your-name>
    ```
 
 3. **Install & run**
@@ -38,11 +38,11 @@
    ```bash
    git add -A
    git commit -m "describe what changed and why"
-   git push origin dev/<your-name>
+   git push origin <your-name>
    ```
 
 5. **Merge your work**
-   - Open a Pull Request on GitHub: `dev/<your-name>` → `dev`
+   - Open a Pull Request on GitHub: `<your-name>` → `dev`
    - Get a review from a teammate, then merge
    - `main` is updated from `dev` after testing
 

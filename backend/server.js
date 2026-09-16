@@ -8,6 +8,52 @@ const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
 
+const PYTHON_COMMANDS = process.platform === 'win32' ? ['python', 'py', 'python3'] : ['python3', 'python'];
+
+function runPython(args) {
+  return new Promise((resolve, reject) => {
+    const tryNext = (index, lastError) => {
+      if (index >= PYTHON_COMMANDS.length) {
+        reject(lastError || new Error('Python 3 is not installed.'));
+        return;
+      }
+
+      const cmd = PYTHON_COMMANDS[index];
+      const py = spawn(cmd, args, { windowsHide: true });
+      let stderr = '';
+
+      py.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      py.on('error', (err) => {
+        tryNext(index + 1, err);
+      });
+
+      py.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+
+        const missingPython =
+          code === 9009 ||
+          /python was not found/i.test(stderr) ||
+          /is not recognized/i.test(stderr);
+
+        if (missingPython) {
+          tryNext(index + 1, new Error(`${cmd} failed with code ${code}: ${stderr}`));
+          return;
+        }
+
+        reject(new Error(`${cmd} failed with code ${code}: ${stderr}`));
+      });
+    };
+
+    tryNext(0);
+  });
+}
+
 const libreConvert = util.promisify(libre.convert);
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -383,24 +429,7 @@ app.post('/api/convert/pdf-to-word', upload.single('file'), async (req, res) => 
     await fs.mkdir(tempDir, { recursive: true });
     await fs.writeFile(inputPdfPath, req.file.buffer);
 
-    await new Promise((resolve, reject) => {
-      const py = spawn('python3', [pythonScriptPath, inputPdfPath, outputDocxPath]);
-
-      let stderr = '';
-      py.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      py.on('close', (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new Error(`pdf2docx failed with code ${code}: ${stderr}`));
-        }
-      });
-
-      py.on('error', (err) => reject(err));
-    });
+    await runPython([pythonScriptPath, inputPdfPath, outputDocxPath]);
 
     const docxBuffer = await fs.readFile(outputDocxPath);
     const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');

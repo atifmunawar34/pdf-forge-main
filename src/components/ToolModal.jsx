@@ -15,7 +15,7 @@ export default function ToolModal({ tool, onClose, onLaunchStudio }) {
   const [rawHtml, setRawHtml] = useState('');
 
   const getFileInputAccept = () => {
-    if (tool.id === 'jpg-to-pdf') return 'image/jpeg,image/png,image/webp';
+    if (tool.id === 'jpg-to-pdf' || tool.id === 'scan') return 'image/jpeg,image/png,image/webp';
     if (tool.id === 'word-to-pdf') return '.docx,.doc,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword';
     if (tool.id === 'powerpoint-to-pdf') return '.pptx,.ppt,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint';
     if (tool.id === 'excel-to-pdf') return '.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel';
@@ -33,21 +33,33 @@ export default function ToolModal({ tool, onClose, onLaunchStudio }) {
     const lockedNames = [];
 
     try {
-      // 1. Password security check
-      for (const file of newFilesArray) {
-        let isLocked = false;
-        if (file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf') {
-          isLocked = await checkPdfPassword(file);
-        } else if (tool.id === 'word-to-pdf') {
-          isLocked = await checkDocxPassword(file);
-        } else if (tool.id === 'powerpoint-to-pdf') {
-          isLocked = await checkPptxPassword(file);
-        } else if (tool.id === 'excel-to-pdf') {
-          isLocked = await checkExcelPassword(file);
-        }
+      if (tool.id === 'compare' && newFilesArray.length < 2) {
+        setErrorMsg('Compare PDF needs 2 PDF files. Please select two documents.');
+        setIsVerifying(false);
+        return;
+      }
 
-        if (isLocked) {
-          lockedNames.push(file.name);
+      if (tool.id === 'compare' && newFilesArray.length > 2) {
+        newFilesArray.splice(2);
+      }
+
+      // 1. Password security check (skip for repair — files may be damaged)
+      if (tool.id !== 'repair') {
+        for (const file of newFilesArray) {
+          let isLocked = false;
+          if (file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf') {
+            isLocked = await checkPdfPassword(file);
+          } else if (tool.id === 'word-to-pdf') {
+            isLocked = await checkDocxPassword(file);
+          } else if (tool.id === 'powerpoint-to-pdf') {
+            isLocked = await checkPptxPassword(file);
+          } else if (tool.id === 'excel-to-pdf') {
+            isLocked = await checkExcelPassword(file);
+          }
+
+          if (isLocked) {
+            lockedNames.push(file.name);
+          }
         }
       }
 
@@ -82,8 +94,8 @@ export default function ToolModal({ tool, onClose, onLaunchStudio }) {
         return;
       }
 
-      // For jpg-to-pdf: create image cards
-      if (tool.id === 'jpg-to-pdf') {
+      // For jpg-to-pdf and scan: create image cards
+      if (tool.id === 'jpg-to-pdf' || tool.id === 'scan') {
         const imageCards = newFilesArray.map((file) => ({
           id: `img-${Date.now()}-${Math.random()}`,
           file,
@@ -180,6 +192,7 @@ export default function ToolModal({ tool, onClose, onLaunchStudio }) {
             </button>
           </div>
         ) : (
+          <>
           <div
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => {
@@ -191,7 +204,7 @@ export default function ToolModal({ tool, onClose, onLaunchStudio }) {
             <input
               type="file"
               id="modalFileInput"
-              multiple={tool.id === 'merge' || tool.id === 'jpg-to-pdf'}
+              multiple={tool.id === 'merge' || tool.id === 'jpg-to-pdf' || tool.id === 'scan' || tool.id === 'compare'}
               accept={getFileInputAccept()}
               className="hidden"
               onChange={(e) => handleFilesSelected(e.target.files)}
@@ -206,19 +219,35 @@ export default function ToolModal({ tool, onClose, onLaunchStudio }) {
                 <>
                   <UploadCloud className="w-10 h-10 text-slate-400 mx-auto" />
                   <p className="text-sm font-medium text-slate-700">
-                    Drop {tool.id === 'merge' ? 'PDF files' : 'document'} here or <span className="text-rose-500 font-bold">browse</span>
+                    Drop {tool.id === 'merge' || tool.id === 'compare' ? 'PDF files' : tool.id === 'scan' || tool.id === 'jpg-to-pdf' ? 'images' : 'document'} here or <span className="text-rose-500 font-bold">browse</span>
                   </p>
                   <p className="text-xs text-slate-400">
                     {tool.id === 'merge'
                       ? 'Select multiple PDFs to visually organize and merge'
+                      : tool.id === 'compare'
+                      ? 'Select exactly two PDFs to compare side by side'
+                      : tool.id === 'scan'
+                      ? 'Upload scanned photos, or open the camera in the next step'
                       : tool.id === 'unlock'
                       ? 'Select the locked PDF to decrypt'
+                      : tool.id === 'repair'
+                      ? 'Upload a damaged or unreadable PDF to rebuild it'
                       : 'Files are checked for password security before editing'}
                   </p>
                 </>
               )}
             </label>
           </div>
+          {tool.id === 'scan' && !isVerifying && (
+            <button
+              type="button"
+              onClick={() => onLaunchStudio(tool, { files: [], imageCards: [] })}
+              className="mt-4 w-full py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold text-sm transition cursor-pointer"
+            >
+              Use Camera
+            </button>
+          )}
+          </>
         )}
       </div>
     </div>

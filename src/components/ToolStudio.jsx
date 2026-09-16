@@ -53,7 +53,12 @@ import {
   X as CloseIcon,
   SlidersVertical,
   ScanText,
-  Edit3
+  Edit3,
+  Camera,
+  PenTool,
+  Sparkles,
+  Languages,
+  GitCompare
 } from 'lucide-react';
 import PdfTextEditor from './PdfTextEditor';
 import {
@@ -87,7 +92,15 @@ import {
   checkExcelPassword,
   extractPdfFormFields,
   savePdfForms,
-  performPdfOcr
+  performPdfOcr,
+  repairPDF,
+  convertPdfToPdfA,
+  signPDF,
+  redactPDF,
+  comparePDFs,
+  summarizePdf,
+  translatePdf,
+  renderBlobPdfPreview
 } from '../utils/pdfWorker';
 
 export default function ToolStudio({ tool, initialFiles, initialImageCards, initialHtmlCode, initialHtmlMode, onBack }) {
@@ -99,11 +112,16 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   const [isProcessing, setIsProcessing] = useState(false);
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
+  const [resultPreviewPages, setResultPreviewPages] = useState([]);
+  const [resultPreviewIndex, setResultPreviewIndex] = useState(0);
+  const [resultPreviewTotal, setResultPreviewTotal] = useState(0);
+  const [isResultPreviewLoading, setIsResultPreviewLoading] = useState(false);
+  const [resultPreviewText, setResultPreviewText] = useState('');
 
   const changeFileInputRef = useRef(null);
 
   function getFileInputAccept() {
-    if (tool?.id === 'jpg-to-pdf') return 'image/jpeg,image/png,image/webp';
+    if (tool?.id === 'jpg-to-pdf' || tool?.id === 'scan') return 'image/jpeg,image/png,image/webp';
     if (tool?.id === 'word-to-pdf') return '.docx,.doc,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword';
     if (tool?.id === 'powerpoint-to-pdf') return '.pptx,.ppt,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint';
     if (tool?.id === 'excel-to-pdf') return '.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel';
@@ -118,6 +136,20 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   const [ocrLanguage, setOcrLanguage] = useState('eng');
   const [ocrOutputMode, setOcrOutputMode] = useState('searchable_pdf'); // 'searchable_pdf' | 'text'
   const [ocrProgress, setOcrProgress] = useState({ status: '', percent: 0 });
+
+  const scanVideoRef = useRef(null);
+  const signPadRef = useRef(null);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [signDataUrl, setSignDataUrl] = useState('');
+  const [signTypedName, setSignTypedName] = useState('');
+  const [signApplyAll, setSignApplyAll] = useState(false);
+  const [signPos, setSignPos] = useState({ xPct: 62, yPct: 82, widthPct: 28 });
+  const [signPage, setSignPage] = useState(1);
+  const [redactBoxes, setRedactBoxes] = useState([]);
+  const [redactDraft, setRedactDraft] = useState(null);
+  const [redactPage, setRedactPage] = useState(1);
+  const [translateFrom, setTranslateFrom] = useState('en');
+  const [translateTo, setTranslateTo] = useState('ur');
 
   // Password Protection State
   const [protectPassword, setProtectPassword] = useState('');
@@ -144,7 +176,9 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
     tool?.id === 'page-numbers' ||
     tool?.id === 'watermark' ||
     tool?.id === 'protect' ||
-    tool?.id === 'crop';
+    tool?.id === 'crop' ||
+    tool?.id === 'sign' ||
+    tool?.id === 'redact';
 
   const [thumbnails, setThumbnails] = useState([]);
   const [totalPages, setTotalPages] = useState(0);
@@ -580,17 +614,89 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   const isOverflowingY = displayHeight > availH;
   const isOverflowingX = displayWidth > availW;
 
+  const isPdfSourceConversion = ['pdf-to-word', 'pdf-to-powerpoint', 'pdf-to-excel', 'pdf-to-jpg', 'to-markdown', 'repair', 'pdf-to-pdfa', 'summarizer', 'translate'].includes(tool?.id);
+
   useEffect(() => {
     if (isPageLevelTool && files.length > 0) {
       if (tool?.id === 'crop') {
         loadCropPagePreview(files[0], cropCurrentPage);
+      } else if (tool?.id === 'sign') {
+        loadCropPagePreview(files[0], signPage);
+        loadDocumentThumbnails(files[0]);
+      } else if (tool?.id === 'redact') {
+        loadCropPagePreview(files[0], redactPage);
+        loadDocumentThumbnails(files[0]);
       } else {
         loadDocumentThumbnails(files[0]);
       }
     } else if (tool?.id === 'merge' && files.length > 0) {
       loadMergePreviews(files);
+    } else if (
+      isPdfSourceConversion &&
+      files.length > 0 &&
+      (files[0]?.type === 'application/pdf' || files[0]?.name?.toLowerCase().endsWith('.pdf'))
+    ) {
+      loadConversionPreview(files[0]);
     }
-  }, [files, tool?.id, cropCurrentPage]);
+  }, [files, tool?.id, cropCurrentPage, signPage, redactPage]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const resetPreview = () => {
+      setResultPreviewPages([]);
+      setResultPreviewIndex(0);
+      setResultPreviewTotal(0);
+      setResultPreviewText('');
+      setIsResultPreviewLoading(false);
+    };
+
+    if (!result?.blob) {
+      resetPreview();
+      return undefined;
+    }
+
+    const name = (result.filename || '').toLowerCase();
+    const mime = result.mime || result.blob.type || '';
+
+    const loadPreview = async () => {
+      if (mime.includes('pdf') || name.endsWith('.pdf')) {
+        setIsResultPreviewLoading(true);
+        try {
+          const preview = await renderBlobPdfPreview(result.blob);
+          if (!cancelled) {
+            setResultPreviewPages(preview.pages);
+            setResultPreviewTotal(preview.totalPages);
+            setResultPreviewIndex(0);
+          }
+        } catch {
+          if (!cancelled) setResultPreviewPages([]);
+        } finally {
+          if (!cancelled) setIsResultPreviewLoading(false);
+        }
+        return;
+      }
+
+      if (result.previewText) {
+        setResultPreviewText(result.previewText);
+        return;
+      }
+
+      if (mime.startsWith('text/') || name.endsWith('.txt') || name.endsWith('.md')) {
+        try {
+          const text = await result.blob.text();
+          if (!cancelled) setResultPreviewText(text);
+        } catch {
+          if (!cancelled) setResultPreviewText('');
+        }
+      }
+    };
+
+    loadPreview();
+    return () => {
+      cancelled = true;
+    };
+  }, [result]);
 
   const loadCropPagePreview = async (file, pageNum) => {
     setErrorMsg('');
@@ -601,6 +707,29 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
       setTotalPages(data.totalPages);
     } catch (err) {
       setErrorMsg('Failed to render PDF page. The document may be corrupted.');
+    } finally {
+      setIsRenderingPages(false);
+    }
+  };
+
+  const loadConversionPreview = async (file) => {
+    setErrorMsg('');
+    setIsRenderingPages(true);
+    setThumbnails([]);
+    try {
+      const data = await renderSinglePdfPage(file, 1, 0.9);
+      setThumbnails([
+        {
+          id: `preview-${Date.now()}`,
+          originalIndex: 0,
+          pageNumber: 1,
+          rotation: 0,
+          dataUrl: data.dataUrl,
+        },
+      ]);
+      setTotalPages(data.totalPages);
+    } catch {
+      setThumbnails([]);
     } finally {
       setIsRenderingPages(false);
     }
@@ -728,6 +857,147 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
     setFiles((prev) => [...prev, ...Array.from(e.target.files)]);
     e.target.value = '';
   };
+
+  const stopScanCamera = () => {
+    const stream = scanVideoRef.current?.srcObject;
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+      scanVideoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
+  };
+
+  const startScanCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+      setCameraActive(true);
+      requestAnimationFrame(() => {
+        if (scanVideoRef.current) {
+          scanVideoRef.current.srcObject = stream;
+        }
+      });
+    } catch {
+      setErrorMsg('Camera access was blocked. Please allow the camera or upload images instead.');
+    }
+  };
+
+  const captureScanPage = () => {
+    const video = scanVideoRef.current;
+    if (!video || !video.videoWidth) {
+      setErrorMsg('Camera is not ready yet. Wait a moment and try again.');
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const file = new File([blob], `scan_${Date.now()}.jpg`, { type: 'image/jpeg' });
+      setImageCards((prev) => [
+        ...prev,
+        { id: `img-${Date.now()}-${Math.random()}`, file, previewUrl: URL.createObjectURL(file), rotation: 0 },
+      ]);
+      setFiles((prev) => [...prev, file]);
+    }, 'image/jpeg', 0.92);
+  };
+
+  const initSignPad = (event) => {
+    const canvas = signPadRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const rect = canvas.getBoundingClientRect();
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 2.2;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(event.clientX - rect.left, event.clientY - rect.top);
+    canvas.isDrawing = true;
+  };
+
+  const drawSignPad = (event) => {
+    const canvas = signPadRef.current;
+    if (!canvas?.isDrawing) return;
+    const ctx = canvas.getContext('2d');
+    const rect = canvas.getBoundingClientRect();
+    ctx.lineTo(event.clientX - rect.left, event.clientY - rect.top);
+    ctx.stroke();
+  };
+
+  const endSignPad = () => {
+    const canvas = signPadRef.current;
+    if (!canvas) return;
+    canvas.isDrawing = false;
+    setSignDataUrl(canvas.toDataURL('image/png'));
+  };
+
+  const clearSignPad = () => {
+    const canvas = signPadRef.current;
+    if (canvas) {
+      canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    }
+    setSignDataUrl('');
+    setSignTypedName('');
+  };
+
+  const applyTypedSignature = () => {
+    if (!signTypedName.trim()) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = 700;
+    canvas.height = 180;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'italic 64px "Times New Roman", serif';
+    ctx.fillText(signTypedName.trim(), 24, 110);
+    setSignDataUrl(canvas.toDataURL('image/png'));
+  };
+
+  const handleSignatureUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setSignDataUrl(String(reader.result || ''));
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleRedactPointer = (event, phase) => {
+    const target = event.currentTarget;
+    const rect = target.getBoundingClientRect();
+    const xPct = ((event.clientX - rect.left) / rect.width) * 100;
+    const yPct = ((event.clientY - rect.top) / rect.height) * 100;
+    if (phase === 'down') {
+      setRedactDraft({ xPct, yPct, wPct: 0, hPct: 0, originX: xPct, originY: yPct });
+      return;
+    }
+    if (phase === 'move' && redactDraft) {
+      const nx = Math.min(redactDraft.originX, xPct);
+      const ny = Math.min(redactDraft.originY, yPct);
+      setRedactDraft({
+        ...redactDraft,
+        xPct: nx,
+        yPct: ny,
+        wPct: Math.abs(xPct - redactDraft.originX),
+        hPct: Math.abs(yPct - redactDraft.originY),
+      });
+      return;
+    }
+    if (phase === 'up' && redactDraft) {
+      if (redactDraft.wPct > 1.5 && redactDraft.hPct > 1.5) {
+        setRedactBoxes((prev) => [
+          ...prev,
+          { pageIndex: redactPage - 1, xPct: redactDraft.xPct, yPct: redactDraft.yPct, wPct: redactDraft.wPct, hPct: redactDraft.hPct },
+        ]);
+      }
+      setRedactDraft(null);
+    }
+  };
+
+  useEffect(() => () => stopScanCamera(), []);
 
   const handleWatermarkImageUpload = (e) => {
     const file = e.target.files?.[0];
@@ -904,6 +1174,9 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
       URL.revokeObjectURL(result.url);
     }
     setResult(null);
+    setResultPreviewPages([]);
+    setResultPreviewIndex(0);
+    setResultPreviewText('');
     setErrorMsg('');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -929,6 +1202,26 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
 
     if (tool?.id === 'unlock' && unlockMode === 'with-password' && !unlockPassword) {
       setErrorMsg('Please enter the password to unlock this document.');
+      return;
+    }
+
+    if (tool?.id === 'compare' && files.length < 2) {
+      setErrorMsg('Compare PDF requires 2 PDF files.');
+      return;
+    }
+
+    if ((tool?.id === 'jpg-to-pdf' || tool?.id === 'scan') && imageCards.length === 0) {
+      setErrorMsg('Add at least one image or capture a page with the camera.');
+      return;
+    }
+
+    if (tool?.id === 'sign' && !signDataUrl) {
+      setErrorMsg('Draw, type, or upload a signature first.');
+      return;
+    }
+
+    if (tool?.id === 'redact' && redactBoxes.length === 0) {
+      setErrorMsg('Draw at least one black box over the text you want to hide.');
       return;
     }
 
@@ -967,6 +1260,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
           output = await unlockPDF(files[0], { mode: unlockMode, password: unlockPassword });
           break;
         case 'jpg-to-pdf':
+        case 'scan':
           output = await imagesToPDF(imageCards, imageToPdfOptions);
           break;
         case 'watermark':
@@ -1020,6 +1314,34 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
         case 'pdf-to-jpg':
           output = await pdfToJpg(files[0]);
           break;
+        case 'repair':
+          output = await repairPDF(files[0]);
+          break;
+        case 'pdf-to-pdfa':
+          output = await convertPdfToPdfA(files[0]);
+          break;
+        case 'sign':
+          output = await signPDF(files[0], {
+            signatureDataUrl: signDataUrl,
+            pageNumber: signPage,
+            xPct: signPos.xPct,
+            yPct: signPos.yPct,
+            widthPct: signPos.widthPct,
+            applyAll: signApplyAll,
+          });
+          break;
+        case 'redact':
+          output = await redactPDF(files[0], redactBoxes);
+          break;
+        case 'compare':
+          output = await comparePDFs(files[0], files[1]);
+          break;
+        case 'summarizer':
+          output = await summarizePdf(files[0]);
+          break;
+        case 'translate':
+          output = await translatePdf(files[0], { from: translateFrom, to: translateTo });
+          break;
         case 'to-markdown':
           output = await pdfToMarkdown(files[0]);
           break;
@@ -1030,9 +1352,12 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
       const url = URL.createObjectURL(output.blob);
       setResult({
         url,
+        blob: output.blob,
+        mime: output.blob.type || '',
         filename: output.filename,
         originalSize: output.originalSize,
-        compressedSize: output.compressedSize
+        compressedSize: output.compressedSize,
+        previewText: output.previewText || ''
       });
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
@@ -1077,6 +1402,11 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
       badgeColor = 'bg-orange-600 text-white';
       borderColor = 'border-orange-200';
       bgGradient = 'from-orange-50/50 to-slate-50';
+    } else if (['pdf-to-word', 'pdf-to-powerpoint', 'pdf-to-excel', 'pdf-to-jpg', 'to-markdown', 'repair', 'pdf-to-pdfa', 'summarizer', 'translate', 'compare', 'sign', 'redact'].includes(tool?.id)) {
+      badgeText = 'PDF';
+      badgeColor = 'bg-rose-600 text-white';
+      borderColor = 'border-rose-200';
+      bgGradient = 'from-rose-50/50 to-slate-50';
     } else if (tool?.id === 'excel-to-pdf') {
       IconComp = Sheet;
       badgeText = 'XLS';
@@ -1105,14 +1435,22 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
           </span>
         </div>
 
-        <div className="w-20 h-28 bg-white border border-slate-200 rounded-xl shadow-xs flex flex-col items-center justify-center p-3 relative mt-2">
-          <div className="w-full space-y-1.5 opacity-40">
-            <div className="h-1.5 bg-slate-400 rounded-full w-3/4" />
-            <div className="h-1.5 bg-slate-300 rounded-full w-full" />
-            <div className="h-1.5 bg-slate-300 rounded-full w-5/6" />
-            <div className="h-1.5 bg-slate-200 rounded-full w-1/2" />
-          </div>
-          <IconComp className="w-7 h-7 absolute inset-0 m-auto text-slate-700 opacity-90" />
+        <div className={`${thumbnails[0]?.dataUrl ? 'w-44 h-60' : 'w-20 h-28'} bg-white border border-slate-200 rounded-xl shadow-xs flex flex-col items-center justify-center p-1 relative mt-2 overflow-hidden`}>
+          {isRenderingPages ? (
+            <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+          ) : thumbnails[0]?.dataUrl ? (
+            <img src={thumbnails[0].dataUrl} alt="Uploaded document preview" className="w-full h-full object-contain rounded-lg" />
+          ) : (
+            <>
+              <div className="w-full space-y-1.5 opacity-40 p-2">
+                <div className="h-1.5 bg-slate-400 rounded-full w-3/4" />
+                <div className="h-1.5 bg-slate-300 rounded-full w-full" />
+                <div className="h-1.5 bg-slate-300 rounded-full w-5/6" />
+                <div className="h-1.5 bg-slate-200 rounded-full w-1/2" />
+              </div>
+              <IconComp className="w-7 h-7 absolute inset-0 m-auto text-slate-700 opacity-90" />
+            </>
+          )}
         </div>
 
         <div className="w-full space-y-1">
@@ -1120,7 +1458,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
             {file.name}
           </p>
           <p className="text-[11px] font-medium text-slate-400">
-            {formatFileSize(file.size)}
+            {formatFileSize(file.size)}{totalPages > 0 ? ` · ${totalPages} page${totalPages === 1 ? '' : 's'}` : ''}
           </p>
         </div>
 
@@ -2019,7 +2357,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                     onSave={(blob, filename) => {
                       setEditedPdfBlob(blob);
                       const url = URL.createObjectURL(blob);
-                      setResult({ url, filename });
+                      setResult({ url, blob, mime: blob.type || 'application/pdf', filename });
                       setIsEditingPdf(false);
                     }}
                     onCancel={() => setIsEditingPdf(false)}
@@ -2422,12 +2760,23 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
             )}
 
             {/* 3. Image to PDF Studio */}
-            {tool?.id === 'jpg-to-pdf' && (
+            {(tool?.id === 'jpg-to-pdf' || tool?.id === 'scan') && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                 <div className="lg:col-span-8 bg-white border border-slate-200 rounded-3xl p-6 shadow-sm space-y-4">
                   <div className="flex items-center justify-between pb-4 border-b border-slate-100 text-xs font-semibold">
                     <span className="text-slate-600">{imageCards.length} {imageCards.length === 1 ? 'Image' : 'Images'} Selected</span>
-                    <label htmlFor="studioAddImagesInput" className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-bold rounded-xl text-xs cursor-pointer flex items-center gap-1">
+                    <div className="flex items-center gap-2">
+                      {tool?.id === 'scan' && (
+                        <button
+                          type="button"
+                          onClick={cameraActive ? stopScanCamera : startScanCamera}
+                          className="px-3 py-1.5 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 font-bold rounded-xl text-xs cursor-pointer flex items-center gap-1"
+                        >
+                          <Camera className="w-3.5 h-3.5" />
+                          <span>{cameraActive ? 'Close Camera' : 'Open Camera'}</span>
+                        </button>
+                      )}
+                      <label htmlFor="studioAddImagesInput" className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-bold rounded-xl text-xs cursor-pointer flex items-center gap-1">
                       <Plus className="w-3.5 h-3.5" />
                       <span>Add More Images</span>
                       <input
@@ -2439,7 +2788,21 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                         onChange={handleAddMoreImages}
                       />
                     </label>
+                    </div>
                   </div>
+
+                  {tool?.id === 'scan' && cameraActive && (
+                    <div className="rounded-2xl border border-red-200 bg-slate-900 p-3 space-y-3">
+                      <video ref={scanVideoRef} autoPlay playsInline className="w-full max-h-72 object-contain rounded-xl bg-black" />
+                      <button
+                        type="button"
+                        onClick={captureScanPage}
+                        className="w-full py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs cursor-pointer"
+                      >
+                        Capture Page
+                      </button>
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 max-h-[560px] overflow-y-auto pr-1">
                     {imageCards.map((card, idx) => {
@@ -2501,7 +2864,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                 </div>
 
                 <div className="lg:col-span-4 bg-white border border-slate-200 rounded-3xl p-6 space-y-5 shadow-sm text-xs">
-                  <h3 className="font-bold text-slate-900 text-sm border-b pb-3">Image to PDF options</h3>
+                  <h3 className="font-bold text-slate-900 text-sm border-b pb-3">{tool?.id === 'scan' ? 'Scan to PDF options' : 'Image to PDF options'}</h3>
 
                   <div className="space-y-2">
                     <label className="font-semibold text-slate-700 block">Page orientation</label>
@@ -3338,7 +3701,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
             )}
 
             {/* 10. Single File Conversions */}
-            {['word-to-pdf', 'powerpoint-to-pdf', 'excel-to-pdf', 'html-to-pdf', 'pdf-to-word', 'pdf-to-powerpoint', 'pdf-to-excel', 'pdf-to-jpg', 'to-markdown'].includes(tool?.id) && (
+            {['word-to-pdf', 'powerpoint-to-pdf', 'excel-to-pdf', 'html-to-pdf', 'pdf-to-word', 'pdf-to-powerpoint', 'pdf-to-excel', 'pdf-to-jpg', 'to-markdown', 'repair', 'pdf-to-pdfa'].includes(tool?.id) && (
               <div className="bg-white border border-slate-200 rounded-3xl p-8 max-w-lg mx-auto space-y-6 shadow-sm">
                 <div className="space-y-4">
                   <div className="text-center font-bold text-xs uppercase tracking-wider text-slate-400">
@@ -3371,10 +3734,204 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                     </div>
                   ) : (
                     <>
-                      <span>{tool?.id === 'to-markdown' ? 'Convert to Markdown' : tool?.id.endsWith('-to-pdf') ? 'Convert to PDF' : 'Convert Document'}</span>
+                      <span>{
+                        tool?.id === 'to-markdown' ? 'Convert to Markdown'
+                        : tool?.id === 'repair' ? 'Repair PDF'
+                        : tool?.id === 'pdf-to-pdfa' ? 'Convert to PDF/A'
+                        : tool?.id.endsWith('-to-pdf') ? 'Convert to PDF'
+                        : 'Convert Document'
+                      }</span>
                       <ArrowRight className="w-4 h-4" />
                     </>
                   )}
+                </button>
+              </div>
+            )}
+
+            {tool?.id === 'sign' && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                <div className="lg:col-span-8 bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
+                  <div className="flex items-center justify-between pb-4 border-b border-slate-100 text-xs font-semibold mb-4">
+                    <span>{files[0]?.name} · Page {signPage}/{Math.max(totalPages, 1)}</span>
+                    <button type="button" onClick={() => changeFileInputRef.current?.click()} className="text-rose-600 font-bold cursor-pointer">Change File</button>
+                  </div>
+                  <div
+                    className="relative mx-auto max-w-xl cursor-crosshair"
+                    onClick={(e) => {
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      setSignPos((prev) => ({
+                        ...prev,
+                        xPct: Math.max(0, ((e.clientX - rect.left) / rect.width) * 100 - prev.widthPct / 2),
+                        yPct: Math.max(0, ((e.clientY - rect.top) / rect.height) * 100),
+                      }));
+                    }}
+                  >
+                    {cropPageDataUrl ? (
+                      <img src={cropPageDataUrl} alt="Sign preview" className="w-full rounded-xl border border-slate-200" />
+                    ) : (
+                      <Loader2 className="w-8 h-8 animate-spin text-indigo-500 mx-auto my-24" />
+                    )}
+                    {signDataUrl && (
+                      <img
+                        src={signDataUrl}
+                        alt="Signature placement"
+                        className="absolute pointer-events-none"
+                        style={{ left: `${signPos.xPct}%`, top: `${signPos.yPct}%`, width: `${signPos.widthPct}%` }}
+                      />
+                    )}
+                  </div>
+                  {totalPages > 1 && (
+                    <div className="flex justify-center gap-2 mt-4">
+                      <button type="button" onClick={() => setSignPage((p) => Math.max(1, p - 1))} className="px-3 py-1.5 border rounded-xl text-xs cursor-pointer">Prev</button>
+                      <button type="button" onClick={() => setSignPage((p) => Math.min(totalPages, p + 1))} className="px-3 py-1.5 border rounded-xl text-xs cursor-pointer">Next</button>
+                    </div>
+                  )}
+                </div>
+                <div className="lg:col-span-4 bg-white border border-slate-200 rounded-3xl p-6 space-y-4 shadow-sm text-xs">
+                  <h3 className="font-bold text-slate-900 text-base border-b pb-3 flex items-center gap-2"><PenTool className="w-4 h-4 text-indigo-600" /> Sign PDF</h3>
+                  <p className="text-slate-500">Draw, type, or upload a signature, then click the page to place it.</p>
+                  <canvas
+                    ref={signPadRef}
+                    width={360}
+                    height={120}
+                    className="w-full border border-slate-200 rounded-xl bg-slate-50 cursor-crosshair"
+                    onMouseDown={initSignPad}
+                    onMouseMove={drawSignPad}
+                    onMouseUp={endSignPad}
+                    onMouseLeave={endSignPad}
+                  />
+                  <div className="flex gap-2">
+                    <button type="button" onClick={clearSignPad} className="flex-1 py-2 border rounded-xl font-bold cursor-pointer">Clear</button>
+                    <label className="flex-1 py-2 border rounded-xl font-bold text-center cursor-pointer">
+                      Upload
+                      <input type="file" accept="image/*" className="hidden" onChange={handleSignatureUpload} />
+                    </label>
+                  </div>
+                  <input
+                    value={signTypedName}
+                    onChange={(e) => setSignTypedName(e.target.value)}
+                    onBlur={applyTypedSignature}
+                    placeholder="Type your name"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl"
+                  />
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={signApplyAll} onChange={(e) => setSignApplyAll(e.target.checked)} />
+                    <span>Apply to all pages</span>
+                  </label>
+                  <button onClick={executeAction} disabled={isProcessing} className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl cursor-pointer">
+                    {isProcessing ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : 'Sign Document'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {tool?.id === 'redact' && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                <div className="lg:col-span-8 bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
+                  <div className="flex items-center justify-between pb-4 border-b border-slate-100 text-xs font-semibold mb-4">
+                    <span>Drag on the page to black out text · Page {redactPage}/{Math.max(totalPages, 1)}</span>
+                    <button type="button" onClick={() => changeFileInputRef.current?.click()} className="text-rose-600 font-bold cursor-pointer">Change File</button>
+                  </div>
+                  <div
+                    className="relative mx-auto max-w-xl select-none"
+                    onMouseDown={(e) => handleRedactPointer(e, 'down')}
+                    onMouseMove={(e) => handleRedactPointer(e, 'move')}
+                    onMouseUp={(e) => handleRedactPointer(e, 'up')}
+                  >
+                    {cropPageDataUrl ? (
+                      <img src={cropPageDataUrl} alt="Redact preview" className="w-full rounded-xl border border-slate-200 pointer-events-none" />
+                    ) : (
+                      <Loader2 className="w-8 h-8 animate-spin text-slate-500 mx-auto my-24" />
+                    )}
+                    {redactBoxes.filter((b) => b.pageIndex === redactPage - 1).concat(redactDraft ? [redactDraft] : []).map((box, idx) => (
+                      <div
+                        key={`${box.xPct}-${idx}`}
+                        className="absolute bg-black/90"
+                        style={{ left: `${box.xPct}%`, top: `${box.yPct}%`, width: `${box.wPct}%`, height: `${box.hPct}%` }}
+                      />
+                    ))}
+                  </div>
+                  {totalPages > 1 && (
+                    <div className="flex justify-center gap-2 mt-4">
+                      <button type="button" onClick={() => setRedactPage((p) => Math.max(1, p - 1))} className="px-3 py-1.5 border rounded-xl text-xs cursor-pointer">Prev</button>
+                      <button type="button" onClick={() => setRedactPage((p) => Math.min(totalPages, p + 1))} className="px-3 py-1.5 border rounded-xl text-xs cursor-pointer">Next</button>
+                    </div>
+                  )}
+                </div>
+                <div className="lg:col-span-4 bg-white border border-slate-200 rounded-3xl p-6 space-y-4 shadow-sm text-xs">
+                  <h3 className="font-bold text-slate-900 text-base border-b pb-3">Redact PDF</h3>
+                  <p className="text-slate-500">{redactBoxes.length} redaction box{redactBoxes.length === 1 ? '' : 'es'} marked.</p>
+                  <button type="button" onClick={() => setRedactBoxes([])} className="w-full py-2 border rounded-xl font-bold cursor-pointer">Clear boxes</button>
+                  <button onClick={executeAction} disabled={isProcessing} className="w-full py-3.5 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-2xl cursor-pointer">
+                    {isProcessing ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : 'Apply Redactions'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {tool?.id === 'compare' && (
+              <div className="bg-white border border-slate-200 rounded-3xl p-8 max-w-3xl mx-auto space-y-6 shadow-sm">
+                <div className="text-center space-y-2">
+                  <GitCompare className="w-8 h-8 text-cyan-600 mx-auto" />
+                  <h3 className="text-xl font-black text-slate-900">Compare PDF</h3>
+                  <p className="text-xs text-slate-500">Two documents will be compared visually and by text.</p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {files.slice(0, 2).map((file, idx) => (
+                    <div key={idx} className="border rounded-2xl p-4 text-center text-xs">
+                      <p className="font-bold text-slate-400 mb-2">{idx === 0 ? 'Document A' : 'Document B'}</p>
+                      {renderSingleFileThumbnailCard(file)}
+                    </div>
+                  ))}
+                </div>
+                <button onClick={executeAction} disabled={isProcessing || files.length < 2} className="w-full py-4 bg-cyan-600 hover:bg-cyan-700 text-white font-bold rounded-2xl cursor-pointer">
+                  {isProcessing ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : 'Compare Documents'}
+                </button>
+              </div>
+            )}
+
+            {tool?.id === 'summarizer' && (
+              <div className="bg-white border border-slate-200 rounded-3xl p-8 max-w-lg mx-auto space-y-6 shadow-sm">
+                <div className="text-center space-y-2">
+                  <Sparkles className="w-8 h-8 text-indigo-500 mx-auto" />
+                  <h3 className="text-xl font-black text-slate-900">AI Summarizer</h3>
+                  <p className="text-xs text-slate-500">Extracts the most important sentences from your PDF. Processed in your browser.</p>
+                </div>
+                {files[0] && renderSingleFileThumbnailCard(files[0])}
+                <button onClick={executeAction} disabled={isProcessing} className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl cursor-pointer">
+                  {isProcessing ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : 'Generate Summary'}
+                </button>
+              </div>
+            )}
+
+            {tool?.id === 'translate' && (
+              <div className="bg-white border border-slate-200 rounded-3xl p-8 max-w-lg mx-auto space-y-6 shadow-sm">
+                <div className="text-center space-y-2">
+                  <Languages className="w-8 h-8 text-violet-500 mx-auto" />
+                  <h3 className="text-xl font-black text-slate-900">Translate PDF</h3>
+                  <p className="text-xs text-slate-500">Extract text, translate it, then rebuild a new PDF.</p>
+                </div>
+                {files[0] && renderSingleFileThumbnailCard(files[0])}
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <label className="space-y-1">
+                    <span className="font-bold text-slate-600">From</span>
+                    <select value={translateFrom} onChange={(e) => setTranslateFrom(e.target.value)} className="w-full px-3 py-2 border rounded-xl">
+                      {[['en','English'],['ur','Urdu'],['ar','Arabic'],['hi','Hindi'],['es','Spanish'],['fr','French'],['de','German'],['zh-CN','Chinese']].map(([code, label]) => (
+                        <option key={code} value={code}>{label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="font-bold text-slate-600">To</span>
+                    <select value={translateTo} onChange={(e) => setTranslateTo(e.target.value)} className="w-full px-3 py-2 border rounded-xl">
+                      {[['ur','Urdu'],['en','English'],['ar','Arabic'],['hi','Hindi'],['es','Spanish'],['fr','French'],['de','German'],['zh-CN','Chinese']].map(([code, label]) => (
+                        <option key={`to-${code}`} value={code}>{label}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <button onClick={executeAction} disabled={isProcessing} className="w-full py-4 bg-violet-600 hover:bg-violet-700 text-white font-bold rounded-2xl cursor-pointer">
+                  {isProcessing ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : 'Translate Document'}
                 </button>
               </div>
             )}
@@ -3482,7 +4039,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
             )}
           </div>
         ) : (
-          <div className="bg-white border border-slate-200 rounded-3xl p-10 max-w-lg mx-auto text-center space-y-6 shadow-md my-auto">
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-10 max-w-4xl mx-auto text-center space-y-6 shadow-md my-auto">
             <CheckCircle2 className="w-16 h-16 text-emerald-500 mx-auto" />
             <h3 className="text-xl font-bold text-slate-900">Task Completed Successfully!</h3>
 
@@ -3502,6 +4059,56 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                 </span>
               </div>
             )}
+
+            <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4 sm:p-6">
+              {isResultPreviewLoading ? (
+                <div className="py-24 flex flex-col items-center justify-center text-slate-400 space-y-3">
+                  <Loader2 className="w-10 h-10 animate-spin text-emerald-500" />
+                  <p className="text-xs font-semibold">Preparing document preview...</p>
+                </div>
+              ) : resultPreviewPages.length > 0 ? (
+                <div className="space-y-4">
+                  <div className="bg-white rounded-2xl border border-slate-200 p-3 shadow-inner flex justify-center min-h-[420px]">
+                    <img
+                      src={resultPreviewPages[resultPreviewIndex]?.dataUrl}
+                      alt={`Page ${resultPreviewIndex + 1}`}
+                      className="max-h-[70vh] w-auto max-w-full object-contain rounded-lg shadow-sm"
+                    />
+                  </div>
+                  <div className="flex items-center justify-center gap-3 text-xs font-semibold text-slate-600">
+                    <button
+                      type="button"
+                      onClick={() => setResultPreviewIndex((i) => Math.max(0, i - 1))}
+                      disabled={resultPreviewIndex === 0}
+                      className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white disabled:opacity-40 cursor-pointer"
+                    >
+                      Previous page
+                    </button>
+                    <span>
+                      Page {resultPreviewIndex + 1} of {resultPreviewTotal || resultPreviewPages.length}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setResultPreviewIndex((i) => Math.min(resultPreviewPages.length - 1, i + 1))}
+                      disabled={resultPreviewIndex >= resultPreviewPages.length - 1}
+                      className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white disabled:opacity-40 cursor-pointer"
+                    >
+                      Next page
+                    </button>
+                  </div>
+                </div>
+              ) : (result.mime || '').startsWith('image/') || /\.(jpg|jpeg|png|webp|gif)$/i.test(result.filename || '') ? (
+                <img src={result.url} alt={result.filename} className="max-h-[70vh] mx-auto rounded-xl shadow-sm object-contain" />
+              ) : resultPreviewText || result.previewText ? (
+                <pre className="text-left text-xs text-slate-700 bg-white border border-slate-200 rounded-2xl p-4 max-h-[70vh] overflow-auto whitespace-pre-wrap">{resultPreviewText || result.previewText}</pre>
+              ) : (
+                <div className="py-16 space-y-3">
+                  <FileText className="w-14 h-14 text-slate-400 mx-auto" />
+                  <p className="text-sm font-semibold text-slate-700">{result.filename}</p>
+                  <p className="text-xs text-slate-400">Preview is ready as a downloadable file.</p>
+                </div>
+              )}
+            </div>
 
             <p className="text-xs text-slate-500 truncate px-4">
               Generated file: <strong className="text-slate-800">{result.filename}</strong>

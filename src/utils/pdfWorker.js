@@ -1,0 +1,2171 @@
+import { PDFDocument, degrees, rgb, StandardFonts } from 'pdf-lib';
+import * as pdfjsLib from 'pdfjs-dist';
+import JSZip from 'jszip';
+import { createWorker } from 'tesseract.js';
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+
+// Configure pdfjs worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+
+/**
+ * Accurately check if a PDF is password-protected or encrypted.
+ * Returns true ONLY if the document cannot be read without a password.
+ */
+export async function checkPdfPassword(file) {
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    
+    // 1. Primary check via PDF.js (Catches PasswordException accurately)
+    try {
+      const loadingTask = pdfjsLib.getDocument({
+        data: new Uint8Array(arrayBuffer.slice(0)),
+        stopAtErrors: false
+      });
+      
+      // Attempt to load the document outline / first page
+      const doc = await loadingTask.promise;
+      await doc.getPage(1);
+      return false; // Document parsed and rendered cleanly without password
+    } catch (pdfErr) {
+      if (
+        pdfErr.name === 'PasswordException' ||
+        pdfErr.message?.toLowerCase().includes('password') ||
+        pdfErr.code === 1
+      ) {
+        return true; // Document is strictly encrypted with a password
+      }
+    }
+
+    // 2. Secondary check via pdf-lib
+    try {
+      await PDFDocument.load(arrayBuffer, { ignoreEncryption: false });
+      return false; // No encryption active
+    } catch (err) {
+      const msg = err.message?.toLowerCase() || '';
+      if (msg.includes('encrypt') || msg.includes('password') || msg.includes('protected')) {
+        return true;
+      }
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Genuine PDF compression using the backend Ghostscript optimization engine.
+ * @param {File} file - Original PDF file
+ * @param {number} compressionLevel - Target reduction slider (10 to 90)
+ */
+export async function compressPDF(file, compressionLevel = 45) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`"${file.name}" is password-protected and cannot be processed.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('compressionPercent', compressionLevel.toString());
+
+  //const response = await fetch('/api/compress-pdf', {
+  const response = await fetch(`${API_BASE_URL}/api/compress-pdf`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || 'Server failed to compress PDF.');
+  }
+
+  const pdfBlob = await response.blob();
+  const originalSizeHeader = response.headers.get('x-original-size');
+  const compressedSizeHeader = response.headers.get('x-compressed-size');
+
+  const origSize = originalSizeHeader ? parseInt(originalSizeHeader, 10) : file.size;
+  const compSize = compressedSizeHeader ? parseInt(compressedSizeHeader, 10) : pdfBlob.size;
+
+  return {
+    blob: pdfBlob,
+    filename: `compressed_${file.name}`,
+    originalSize: origSize,
+    compressedSize: compSize,
+  };
+}
+
+/**
+ * Render all page thumbnails of a PDF file into base64 image data URLs.
+ */
+export async function renderPdfThumbnails(file) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`"${file.name}" is password-protected and cannot be processed.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const numPages = pdf.numPages;
+  const thumbnails = [];
+
+  for (let i = 1; i <= numPages; i++) {
+    const page = await pdf.getPage(i);
+    const viewport = page.getViewport({ scale: 0.35 });
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    thumbnails.push({
+      id: `page-${i}-${Date.now()}-${Math.random()}`,
+      originalIndex: i - 1,
+      pageNumber: i,
+      rotation: 0,
+      dataUrl: canvas.toDataURL('image/jpeg', 0.8)
+    });
+  }
+
+  return { totalPages: numPages, thumbnails };
+}
+
+/**
+ * Render a high-resolution single page of a PDF for the Crop Workspace
+ */
+/**
+ * Render a high-resolution single page of a PDF for the Workspaces.
+ * Added `hideAnnotations` option so existing AcroForm widgets don't get baked
+ * into the background image when manipulating PDF forms.
+ */
+export async function renderSinglePdfPage(file, pageNum = 1, scale = 1.6, hideAnnotations = false) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`"${file.name}" is password-protected and cannot be processed.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const totalPages = pdf.numPages;
+  const targetPageNum = Math.max(1, Math.min(pageNum, totalPages));
+
+  const page = await pdf.getPage(targetPageNum);
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  canvas.height = viewport.height;
+  canvas.width = viewport.width;
+
+  // Render context options
+  const renderContext = {
+    canvasContext: ctx,
+    viewport,
+    // When true, suppresses baking embedded AcroForm text/borders directly into the canvas
+    annotationMode: hideAnnotations ? pdfjsLib.AnnotationMode.DISABLE : pdfjsLib.AnnotationMode.ENABLE,
+  };
+
+  await page.render(renderContext).promise;
+
+  return {
+    dataUrl: canvas.toDataURL('image/jpeg', 0.95),
+    width: viewport.width,
+    height: viewport.height,
+    totalPages
+  };
+}
+
+/**
+ * Reorganize PDF: Apply reordering and page rotations
+ */
+export async function reorganizePDF(file, pageItems) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`"${file.name}" is password-protected and cannot be processed.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  if (!pageItems || pageItems.length === 0) {
+    throw new Error('At least one page must remain in the document.');
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const originalPdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+  const newPdf = await PDFDocument.create();
+
+  const indices = pageItems.map((item) => item.originalIndex);
+  const copiedPages = await newPdf.copyPages(originalPdf, indices);
+
+  copiedPages.forEach((page, i) => {
+    const customRotation = pageItems[i].rotation || 0;
+    if (customRotation !== 0) {
+      const currentRot = page.getRotation().angle;
+      page.setRotation(degrees((currentRot + customRotation) % 360));
+    }
+    newPdf.addPage(page);
+  });
+
+  const bytes = await newPdf.save();
+  return {
+    blob: new Blob([bytes], { type: 'application/pdf' }),
+    filename: `organized_${file.name}`
+  };
+}
+
+/**
+ * Extract specific page indices (1-based) into a new PDF.
+ */
+export async function extractPagesFromPDF(file, pagesToExtractSet) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`"${file.name}" is password-protected and cannot be processed.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+  const totalPages = pdfDoc.getPageCount();
+
+  if (pagesToExtractSet.size === 0) {
+    throw new Error('Please select at least one page to extract.');
+  }
+
+  const newPdf = await PDFDocument.create();
+  const sortedPages = Array.from(pagesToExtractSet)
+    .filter((p) => p >= 1 && p <= totalPages)
+    .sort((a, b) => a - b)
+    .map((p) => p - 1);
+
+  const copiedPages = await newPdf.copyPages(pdfDoc, sortedPages);
+  copiedPages.forEach((page) => newPdf.addPage(page));
+
+  const bytes = await newPdf.save();
+  return {
+    blob: new Blob([bytes], { type: 'application/pdf' }),
+    filename: `extracted_${file.name}`
+  };
+}
+
+/**
+ * Remove specific page indices (1-based) from a PDF.
+ */
+export async function removePagesFromPDF(file, pagesToRemoveSet) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`"${file.name}" is password-protected and cannot be processed.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+  const totalPages = pdfDoc.getPageCount();
+
+  if (pagesToRemoveSet.size >= totalPages) {
+    throw new Error('You cannot remove all pages from the document.');
+  }
+
+  const newPdf = await PDFDocument.create();
+  const pagesToKeepIndices = [];
+
+  for (let i = 0; i < totalPages; i++) {
+    const pageNum = i + 1;
+    if (!pagesToRemoveSet.has(pageNum)) {
+      pagesToKeepIndices.push(i);
+    }
+  }
+
+  const copiedPages = await newPdf.copyPages(pdfDoc, pagesToKeepIndices);
+  copiedPages.forEach((page) => newPdf.addPage(page));
+
+  const bytes = await newPdf.save();
+  return {
+    blob: new Blob([bytes], { type: 'application/pdf' }),
+    filename: `edited_${file.name}`
+  };
+}
+
+/**
+ * Helper to safely load a PDFDocument using pdf-lib.
+ */
+async function loadPdfSafely(file) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`"${file.name}" is password-protected and cannot be processed.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  return await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+}
+
+/**
+ * Helper to safely load a document using pdfjs-dist.
+ */
+async function loadPdfJsSafely(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  try {
+    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+    return await loadingTask.promise;
+  } catch (err) {
+    if (err.name === 'PasswordException' || err.message?.toLowerCase().includes('password')) {
+      const lockErr = new Error(`"${file.name}" is password-protected and cannot be processed.`);
+      lockErr.lockedFiles = [file.name];
+      throw lockErr;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Merge multiple PDF files.
+ */
+export async function mergePDFs(fileList) {
+  const lockedFiles = [];
+
+  for (const file of fileList) {
+    const isLocked = await checkPdfPassword(file);
+    if (isLocked) {
+      lockedFiles.push(file.name);
+    }
+  }
+
+  if (lockedFiles.length > 0) {
+    const err = new Error('Password-protected files detected.');
+    err.lockedFiles = lockedFiles;
+    throw err;
+  }
+
+  const mergedPdf = await PDFDocument.create();
+
+  for (const file of fileList) {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+    const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+    copiedPages.forEach((page) => mergedPdf.addPage(page));
+  }
+
+  const bytes = await mergedPdf.save();
+  return {
+    blob: new Blob([bytes], { type: 'application/pdf' }),
+    filename: 'merged_document.pdf'
+  };
+}
+
+/**
+ * Split PDF: Extract each page into separate PDFs inside a ZIP.
+ */
+export async function splitPDF(file) {
+  const pdfDoc = await loadPdfSafely(file);
+  const totalPages = pdfDoc.getPageCount();
+  const zip = new JSZip();
+
+  for (let i = 0; i < totalPages; i++) {
+    const singleDoc = await PDFDocument.create();
+    const [copiedPage] = await singleDoc.copyPages(pdfDoc, [i]);
+    singleDoc.addPage(copiedPage);
+    const singleBytes = await singleDoc.save();
+    zip.file(`page_${i + 1}.pdf`, singleBytes);
+  }
+
+  const zipContent = await zip.generateAsync({ type: 'blob' });
+  return {
+    blob: zipContent,
+    filename: `${file.name.replace(/\.[^/.]+$/, '')}_pages.zip`
+  };
+}
+
+/**
+ * Convert an ordered list of Image files into PDF with layout options.
+ * @param {Array} imageItems - Array of image objects { file, rotation }
+ * @param {Object} options - Orientation, Page size, Margin & Merge settings
+ */
+export async function imagesToPDF(imageItems, options = {}) {
+  const {
+    orientation = 'portrait', // 'portrait' | 'landscape'
+    pageSize = 'a4', // 'fit' | 'a4' | 'letter'
+    margin = 'none', // 'none' | 'small' | 'big'
+    mergeAll = true,
+  } = options;
+
+  // Margin in points
+  let marginPt = 0;
+  if (margin === 'small') marginPt = 18;
+  if (margin === 'big') marginPt = 36;
+
+  // Standard dimensions in points (72 DPI)
+  const PAGE_SIZES = {
+    a4: { width: 595.28, height: 841.89 },
+    letter: { width: 612.0, height: 792.0 },
+  };
+
+  const createSinglePagePdf = async (item) => {
+    const doc = await PDFDocument.create();
+    const file = item.file || item;
+    const customRotation = item.rotation || 0;
+    const imgBytes = await file.arrayBuffer();
+
+    let embeddedImg;
+    if (file.type.includes('png') || file.name.toLowerCase().endsWith('.png')) {
+      embeddedImg = await doc.embedPng(imgBytes);
+    } else {
+      embeddedImg = await doc.embedJpg(imgBytes);
+    }
+
+    if (!embeddedImg) return null;
+
+    let pageWidth, pageHeight;
+
+    if (pageSize === 'fit') {
+      pageWidth = embeddedImg.width + marginPt * 2;
+      pageHeight = embeddedImg.height + marginPt * 2;
+      if (orientation === 'landscape' && pageHeight > pageWidth) {
+        [pageWidth, pageHeight] = [pageHeight, pageWidth];
+      }
+    } else {
+      const base = PAGE_SIZES[pageSize] || PAGE_SIZES.a4;
+      if (orientation === 'landscape') {
+        pageWidth = Math.max(base.width, base.height);
+        pageHeight = Math.min(base.width, base.height);
+      } else {
+        pageWidth = Math.min(base.width, base.height);
+        pageHeight = Math.max(base.width, base.height);
+      }
+    }
+
+    const page = doc.addPage([pageWidth, pageHeight]);
+
+    if (customRotation !== 0) {
+      page.setRotation(degrees(customRotation));
+    }
+
+    // Fit image inside available printable bounding box
+    const availableWidth = pageWidth - marginPt * 2;
+    const availableHeight = pageHeight - marginPt * 2;
+    const scale = Math.min(
+      availableWidth / embeddedImg.width,
+      availableHeight / embeddedImg.height,
+      1
+    );
+
+    const drawWidth = embeddedImg.width * scale;
+    const drawHeight = embeddedImg.height * scale;
+    const drawX = marginPt + (availableWidth - drawWidth) / 2;
+    const drawY = marginPt + (availableHeight - drawHeight) / 2;
+
+    page.drawImage(embeddedImg, {
+      x: drawX,
+      y: drawY,
+      width: drawWidth,
+      height: drawHeight,
+    });
+
+    return doc;
+  };
+
+  // If not merging into one PDF, build a ZIP of individual PDFs
+  if (!mergeAll && imageItems.length > 1) {
+    const zip = new JSZip();
+    for (let idx = 0; idx < imageItems.length; idx++) {
+      const item = imageItems[idx];
+      const singleDoc = await createSinglePagePdf(item);
+      if (singleDoc) {
+        const bytes = await singleDoc.save({ useObjectStreams: true });
+        const name = (item.file?.name || `image_${idx + 1}`).replace(/\.[^/.]+$/, '');
+        zip.file(`${name}.pdf`, bytes);
+      }
+    }
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    return {
+      blob: zipBlob,
+      filename: 'converted_images.zip',
+    };
+  }
+
+  // Unified single PDF document
+  const pdfDoc = await PDFDocument.create();
+
+  for (const item of imageItems) {
+    const file = item.file || item;
+    const customRotation = item.rotation || 0;
+    const imgBytes = await file.arrayBuffer();
+
+    let embeddedImg;
+    if (file.type.includes('png') || file.name.toLowerCase().endsWith('.png')) {
+      embeddedImg = await pdfDoc.embedPng(imgBytes);
+    } else {
+      embeddedImg = await pdfDoc.embedJpg(imgBytes);
+    }
+
+    if (embeddedImg) {
+      let pageWidth, pageHeight;
+
+      if (pageSize === 'fit') {
+        pageWidth = embeddedImg.width + marginPt * 2;
+        pageHeight = embeddedImg.height + marginPt * 2;
+        if (orientation === 'landscape' && pageHeight > pageWidth) {
+          [pageWidth, pageHeight] = [pageHeight, pageWidth];
+        }
+      } else {
+        const base = PAGE_SIZES[pageSize] || PAGE_SIZES.a4;
+        if (orientation === 'landscape') {
+          pageWidth = Math.max(base.width, base.height);
+          pageHeight = Math.min(base.width, base.height);
+        } else {
+          pageWidth = Math.min(base.width, base.height);
+          pageHeight = Math.max(base.width, base.height);
+        }
+      }
+
+      const page = pdfDoc.addPage([pageWidth, pageHeight]);
+
+      if (customRotation !== 0) {
+        page.setRotation(degrees(customRotation));
+      }
+
+      const availableWidth = pageWidth - marginPt * 2;
+      const availableHeight = pageHeight - marginPt * 2;
+      const scale = Math.min(
+        availableWidth / embeddedImg.width,
+        availableHeight / embeddedImg.height
+      );
+
+      const drawWidth = embeddedImg.width * scale;
+      const drawHeight = embeddedImg.height * scale;
+      const drawX = marginPt + (availableWidth - drawWidth) / 2;
+      const drawY = marginPt + (availableHeight - drawHeight) / 2;
+
+      page.drawImage(embeddedImg, {
+        x: drawX,
+        y: drawY,
+        width: drawWidth,
+        height: drawHeight,
+      });
+    }
+  }
+
+  const bytes = await pdfDoc.save({ useObjectStreams: true });
+  return {
+    blob: new Blob([bytes], { type: 'application/pdf' }),
+    filename: 'converted_images.pdf',
+    originalSize: imageItems.reduce((acc, cur) => acc + (cur.file?.size || 0), 0),
+    compressedSize: bytes.byteLength,
+  };
+}
+
+/**
+ * Convert PDF pages to JPG image files.
+ */
+export async function pdfToJpg(file) {
+  const pdf = await loadPdfJsSafely(file);
+  const numPages = pdf.numPages;
+
+  if (numPages === 1) {
+    const page = await pdf.getPage(1);
+    const viewport = page.getViewport({ scale: 2.0 });
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+
+    await page.render({ canvasContext: context, viewport }).promise;
+
+    const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.95));
+    return {
+      blob,
+      filename: `${file.name.replace(/\.[^/.]+$/, '')}_page_1.jpg`
+    };
+  }
+
+  const zip = new JSZip();
+  for (let i = 1; i <= numPages; i++) {
+    const page = await pdf.getPage(i);
+    const viewport = page.getViewport({ scale: 2.0 });
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+
+    await page.render({ canvasContext: context, viewport }).promise;
+
+    const pageBlob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.95));
+    zip.file(`page_${i}.jpg`, pageBlob);
+  }
+
+  const zipBlob = await zip.generateAsync({ type: 'blob' });
+  return {
+    blob: zipBlob,
+    filename: `${file.name.replace(/\.[^/.]+$/, '')}_jpgs.zip`
+  };
+}
+
+/**
+ * Extract plain text, format tables, indentation, and headings into Markdown.
+ */
+export async function pdfToMarkdown(file) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`Cannot process: "${file.name}" is password-protected.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  // 1. Primary: Server-side PyMuPDF Table & Heading Engine
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    //const response = await fetch('/api/convert/pdf-to-markdown', {
+    const response = await fetch(`${API_BASE_URL}/api/convert/pdf-to-markdown`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (response.ok) {
+      const mdBlob = await response.blob();
+      const baseName = file.name.replace(/\.[^/.]+$/, '');
+      return {
+        blob: mdBlob,
+        filename: `${baseName}.md`,
+        originalSize: file.size,
+        compressedSize: mdBlob.size,
+      };
+    }
+  } catch (err) {
+    console.warn('Backend Markdown conversion error, using fallback:', err);
+  }
+
+  // 2. Secondary Fallback: In-browser structured line-grouped extraction
+  const pdf = await loadPdfJsSafely(file);
+  let markdown = `# ${file.name.replace(/\.[^/.]+$/, '')}\n\n`;
+
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const textContent = await page.getTextContent();
+    
+    // Group items by vertical baseline
+    const lineMap = new Map();
+    for (const item of textContent.items) {
+      if (!item.str) continue;
+      const y = Math.round(item.transform[5]);
+      if (!lineMap.has(y)) {
+        lineMap.set(y, []);
+      }
+      lineMap.get(y).push(item.str);
+    }
+
+    const sortedY = Array.from(lineMap.keys()).sort((a, b) => b - a);
+    const pageLines = sortedY.map((y) => lineMap.get(y).join(' ').trim()).filter(Boolean);
+
+    markdown += `## Page ${i}\n\n${pageLines.join('\n\n')}\n\n`;
+  }
+
+  return {
+    blob: new Blob([markdown], { type: 'text/markdown;charset=utf-8' }),
+    filename: `${file.name.replace(/\.[^/.]+$/, '')}.md`,
+    originalSize: file.size,
+    compressedSize: markdown.length,
+  };
+}
+
+/**
+ * Check if a Word (.docx / .doc) file is password-protected or encrypted.
+ * @param {File} file - Word file object
+ * @returns {Promise<boolean>}
+ */
+export async function checkDocxPassword(file) {
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+
+    // 1. Check for legacy OLE Compound Document signature (D0 CF 11 E0 A1 B1 1A E1)
+    // Encrypted modern .docx files (Office OpenXML Agile Encryption) are wrapped in OLE packages
+    const isOleContainer =
+      bytes[0] === 0xd0 &&
+      bytes[1] === 0xcf &&
+      bytes[2] === 0x11 &&
+      bytes[3] === 0xe0 &&
+      bytes[4] === 0xa1 &&
+      bytes[5] === 0xb1 &&
+      bytes[6] === 0x1a &&
+      bytes[7] === 0xe1;
+
+    if (isOleContainer) {
+      // Decode partial string header to check for standard encryption streams
+      const headerText = new TextDecoder('latin1').decode(bytes.slice(0, 4096));
+      if (
+        headerText.includes('EncryptedPackage') ||
+        headerText.includes('EncryptionInfo') ||
+        headerText.includes('StrongEncryptionTransform')
+      ) {
+        return true;
+      }
+    }
+
+    // 2. Inspect ZIP-based OpenXML container using JSZip
+    try {
+      const zip = await JSZip.loadAsync(arrayBuffer);
+
+      // Check for Document Protection elements in settings.xml
+      const settingsFile = zip.file('word/settings.xml');
+      if (settingsFile) {
+        const settingsXml = await settingsFile.async('text');
+        if (
+          settingsXml.includes('w:documentProtection') &&
+          (settingsXml.includes('w:enforcement="1"') || settingsXml.includes('w:enforcement="true"'))
+        ) {
+          if (settingsXml.includes('w:cryptAlgorithmClass') || settingsXml.includes('w:hash')) {
+            return true;
+          }
+        }
+      }
+    } catch {
+      // If JSZip fails to read a modern .docx container, it is either corrupt or fully encrypted
+      if (file.name.toLowerCase().endsWith('.docx')) {
+        return true;
+      }
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Convert DOCX / DOC to PDF using the LibreOffice backend service.
+ * @param {File} file - Word document file
+ */
+export async function convertWordToPDF(file) {
+  const isLocked = await checkDocxPassword(file);
+  if (isLocked) {
+    const err = new Error(`Cannot process: "${file.name}" is password-protected or encrypted.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  //const response = await fetch('/api/convert/word-to-pdf', {
+  const response = await fetch(`${API_BASE_URL}/api/convert/word-to-pdf`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    if (errorData.isLocked) {
+      const err = new Error(`Cannot process: "${file.name}" is password-protected.`);
+      err.lockedFiles = [file.name];
+      throw err;
+    }
+    throw new Error(errorData.error || 'Server failed to convert Word document.');
+  }
+
+  const pdfBlob = await response.blob();
+  const baseName = file.name.replace(/\.[^/.]+$/, '');
+
+  return {
+    blob: pdfBlob,
+    filename: `${baseName}.pdf`,
+    originalSize: file.size,
+    compressedSize: pdfBlob.size,
+  };
+}
+
+/**
+ * Check if a PowerPoint (.pptx / .ppt) file is password-protected or encrypted.
+ * @param {File} file - Presentation file object
+ * @returns {Promise<boolean>}
+ */
+export async function checkPptxPassword(file) {
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+
+    // 1. Check for legacy OLE Compound Document signature (Encrypted modern .pptx files are wrapped in OLE packages)
+    const isOleContainer =
+      bytes[0] === 0xd0 &&
+      bytes[1] === 0xcf &&
+      bytes[2] === 0x11 &&
+      bytes[3] === 0xe0 &&
+      bytes[4] === 0xa1 &&
+      bytes[5] === 0xb1 &&
+      bytes[6] === 0x1a &&
+      bytes[7] === 0xe1;
+
+    if (isOleContainer) {
+      const headerText = new TextDecoder('latin1').decode(bytes.slice(0, 4096));
+      if (
+        headerText.includes('EncryptedPackage') ||
+        headerText.includes('EncryptionInfo') ||
+        headerText.includes('StrongEncryptionTransform')
+      ) {
+        return true;
+      }
+    }
+
+    // 2. Inspect ZIP-based OpenXML container using JSZip
+    try {
+      const zip = await JSZip.loadAsync(arrayBuffer);
+
+      // Check presentation-level protection settings
+      const presPropsFile = zip.file('ppt/presProps.xml');
+      if (presPropsFile) {
+        const presPropsXml = await presPropsFile.async('text');
+        if (
+          presPropsXml.includes('p:modifyVerifier') ||
+          presPropsXml.includes('p:cryptAlgorithmClass') ||
+          presPropsXml.includes('password=')
+        ) {
+          return true;
+        }
+      }
+    } catch {
+      // If JSZip fails to read a modern .pptx container, it is either corrupt or password-protected
+      if (file.name.toLowerCase().endsWith('.pptx')) {
+        return true;
+      }
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Convert PPTX / PPT to PDF using the LibreOffice backend service.
+ * @param {File} file - Presentation document file
+ */
+export async function convertPowerpointToPDF(file) {
+  const isLocked = await checkPptxPassword(file);
+  if (isLocked) {
+    const err = new Error(`Cannot process: "${file.name}" is password-protected or encrypted.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  //const response = await fetch('/api/convert/powerpoint-to-pdf', {
+  const response = await fetch(`${API_BASE_URL}/api/convert/powerpoint-to-pdf`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    if (errorData.isLocked) {
+      const err = new Error(`Cannot process: "${file.name}" is password-protected.`);
+      err.lockedFiles = [file.name];
+      throw err;
+    }
+    throw new Error(errorData.error || 'Server failed to convert presentation.');
+  }
+
+  const pdfBlob = await response.blob();
+  const baseName = file.name.replace(/\.[^/.]+$/, '');
+
+  return {
+    blob: pdfBlob,
+    filename: `${baseName}.pdf`,
+    originalSize: file.size,
+    compressedSize: pdfBlob.size,
+  };
+}
+
+/**
+ * Convert HTML file or HTML string to PDF using LibreOffice.
+ * @param {File|string} input - HTML File object or raw HTML string
+ */
+export async function convertHtmlToPDF(input) {
+  let response;
+
+  if (typeof input === 'string') {
+    //response = await fetch('/api/convert/html-to-pdf', {
+    response = await fetch(`${API_BASE_URL}/api/convert/html-to-pdf`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html: input }),
+    });
+  } else {
+    const formData = new FormData();
+    formData.append('file', input);
+
+    response = await fetch(`${API_BASE_URL}/api/convert/html-to-pdf`, {
+    //response = await fetch(`${API_BASE_URL}/api/convert/html-to-pdf`, {
+      method: 'POST',
+      body: formData,
+    });
+  }
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || 'Server failed to convert HTML to PDF.');
+  }
+
+  const pdfBlob = await response.blob();
+  const baseName = typeof input === 'string' ? 'document' : input.name.replace(/\.[^/.]+$/, '');
+
+  return {
+    blob: pdfBlob,
+    filename: `${baseName}.pdf`,
+    originalSize: typeof input === 'string' ? new Blob([input]).size : input.size,
+    compressedSize: pdfBlob.size,
+  };
+}
+
+/**
+ * Check if an Excel (.xlsx / .xls) file is password-protected or encrypted.
+ * @param {File} file - Excel file object
+ * @returns {Promise<boolean>}
+ */
+export async function checkExcelPassword(file) {
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+
+    // 1. Check for legacy OLE Compound Document signature (Encrypted modern .xlsx files are wrapped in OLE packages)
+    const isOleContainer =
+      bytes[0] === 0xd0 &&
+      bytes[1] === 0xcf &&
+      bytes[2] === 0x11 &&
+      bytes[3] === 0xe0 &&
+      bytes[4] === 0xa1 &&
+      bytes[5] === 0xb1 &&
+      bytes[6] === 0x1a &&
+      bytes[7] === 0xe1;
+
+    if (isOleContainer) {
+      const headerText = new TextDecoder('latin1').decode(bytes.slice(0, 4096));
+      if (
+        headerText.includes('EncryptedPackage') ||
+        headerText.includes('EncryptionInfo') ||
+        headerText.includes('StrongEncryptionTransform')
+      ) {
+        return true;
+      }
+    }
+
+    // 2. Inspect ZIP-based OpenXML container using JSZip
+    try {
+      const zip = await JSZip.loadAsync(arrayBuffer);
+
+      // Check workbook-level protection in xl/workbook.xml
+      const workbookFile = zip.file('xl/workbook.xml');
+      if (workbookFile) {
+        const wbXml = await workbookFile.async('text');
+        if (wbXml.includes('workbookProtection') && (wbXml.includes('workbookPassword') || wbXml.includes('lockStructure="1"'))) {
+          return true;
+        }
+      }
+    } catch {
+      // If JSZip fails to parse a modern .xlsx container, it is either corrupt or password-protected
+      if (file.name.toLowerCase().endsWith('.xlsx')) {
+        return true;
+      }
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Convert XLSX / XLS to PDF using the LibreOffice backend service.
+ * @param {File} file - Excel spreadsheet file
+ */
+export async function convertExcelToPDF(file) {
+  const isLocked = await checkExcelPassword(file);
+  if (isLocked) {
+    const err = new Error(`Cannot process: "${file.name}" is password-protected or encrypted.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  //const response = await fetch('/api/convert/excel-to-pdf', {
+  const response = await fetch(`${API_BASE_URL}/api/convert/excel-to-pdf`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    if (errorData.isLocked) {
+      const err = new Error(`Cannot process: "${file.name}" is password-protected.`);
+      err.lockedFiles = [file.name];
+      throw err;
+    }
+    throw new Error(errorData.error || 'Server failed to convert Excel document.');
+  }
+
+  const pdfBlob = await response.blob();
+  const baseName = file.name.replace(/\.[^/.]+$/, '');
+
+  return {
+    blob: pdfBlob,
+    filename: `${baseName}.pdf`,
+    originalSize: file.size,
+    compressedSize: pdfBlob.size,
+  };
+}
+
+/**
+ * Rotate PDF pages.
+ * Supports both a single global angle or an array of page items with custom rotation per page.
+ * @param {File} file - PDF file
+ * @param {number|Array} options - Global rotation angle (e.g. 90) OR Array of page items [{ pageNumber, rotation }]
+ */
+export async function rotatePDF(file, options = 90) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`"${file.name}" is password-protected and cannot be processed.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+  const pages = pdfDoc.getPages();
+
+  if (Array.isArray(options)) {
+    // Apply per-page custom rotation
+    options.forEach((item, index) => {
+      if (pages[index] && item.rotation !== 0) {
+        const currentRotation = pages[index].getRotation().angle;
+        pages[index].setRotation(degrees((currentRotation + item.rotation) % 360));
+      }
+    });
+  } else {
+    // Apply global uniform angle across all pages
+    const angle = typeof options === 'number' ? options : 90;
+    pages.forEach((page) => {
+      const currentRotation = page.getRotation().angle;
+      page.setRotation(degrees((currentRotation + angle) % 360));
+    });
+  }
+
+  const bytes = await pdfDoc.save({ useObjectStreams: true });
+  return {
+    blob: new Blob([bytes], { type: 'application/pdf' }),
+    filename: `rotated_${file.name}`,
+  };
+}
+
+/**
+ * Convert PDF to editable Word document (.docx) using the backend service.
+ * @param {File} file - PDF document file
+ */
+export async function convertPdfToWord(file) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`Cannot process: "${file.name}" is password-protected.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  //const response = await fetch('/api/convert/pdf-to-word', {
+  const response = await fetch(`${API_BASE_URL}/api/convert/pdf-to-word`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || 'Server failed to convert PDF to Word document.');
+  }
+
+  const docxBlob = await response.blob();
+  const baseName = file.name.replace(/\.[^/.]+$/, '');
+
+  return {
+    blob: docxBlob,
+    filename: `${baseName}.docx`,
+    originalSize: file.size,
+    compressedSize: docxBlob.size,
+  };
+}
+
+/**
+ * Convert PDF to PowerPoint presentation (.pptx) using the backend service.
+ * @param {File} file - PDF document file
+ */
+export async function convertPdfToPowerpoint(file) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`Cannot process: "${file.name}" is password-protected.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  
+  const response = await fetch(`${API_BASE_URL}/api/convert/pdf-to-powerpoint`, {
+  //const response = await fetch('/api/convert/pdf-to-powerpoint', {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || 'Server failed to convert PDF to PowerPoint presentation.');
+  }
+
+  const pptxBlob = await response.blob();
+  const baseName = file.name.replace(/\.[^/.]+$/, '');
+
+  return {
+    blob: pptxBlob,
+    filename: `${baseName}.pptx`,
+    originalSize: file.size,
+    compressedSize: pptxBlob.size,
+  };
+}
+
+/**
+ * Convert PDF to Excel spreadsheet (.xlsx) using the backend service.
+ * @param {File} file - PDF document file
+ */
+export async function convertPdfToExcel(file) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`Cannot process: "${file.name}" is password-protected.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  //const response = await fetch('/api/convert/pdf-to-excel', {
+  const response = await fetch(`${API_BASE_URL}/api/convert/pdf-to-excel`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || 'Server failed to convert PDF to Excel spreadsheet.');
+  }
+
+  const xlsxBlob = await response.blob();
+  const baseName = file.name.replace(/\.[^/.]+$/, '');
+
+  return {
+    blob: xlsxBlob,
+    filename: `${baseName}.xlsx`,
+    originalSize: file.size,
+    compressedSize: xlsxBlob.size,
+  };
+}
+
+/**
+ * Add customizable page numbers to a PDF document.
+ * @param {File} file - Source PDF file
+ * @param {Object} options - Numbering layout options
+ */
+export async function addPageNumbersToPDF(file, options) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`Cannot process: "${file.name}" is password-protected or encrypted.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const {
+    position = 'bottom-right',
+    margin = 'recommended',
+    pageMode = 'single',
+    firstNumber = 1,
+    fromPage = 1,
+    toPage = 1,
+    textPreset = 'number-only',
+    customText = 'Page {n} of {p}',
+    fontSize = 10,
+    fontFamily = 'Helvetica',
+    isBold = false,
+    isItalic = false,
+    isUnderline = false,
+    color = '#4A5568',
+  } = options;
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+  const totalPages = pdfDoc.getPageCount();
+
+  // Load standard font styles
+  let fontRef;
+  if (fontFamily === 'Times') {
+    if (isBold && isItalic) fontRef = await pdfDoc.embedFont(StandardFonts.TimesRomanBoldItalic);
+    else if (isBold) fontRef = await pdfDoc.embedFont(StandardFonts.TimesRomanBold);
+    else if (isItalic) fontRef = await pdfDoc.embedFont(StandardFonts.TimesRomanItalic);
+    else fontRef = await pdfDoc.embedFont(StandardFonts.TimesRoman);
+  } else if (fontFamily === 'Courier') {
+    if (isBold && isItalic) fontRef = await pdfDoc.embedFont(StandardFonts.CourierBoldOblique);
+    else if (isBold) fontRef = await pdfDoc.embedFont(StandardFonts.CourierBold);
+    else if (isItalic) fontRef = await pdfDoc.embedFont(StandardFonts.CourierOblique);
+    else fontRef = await pdfDoc.embedFont(StandardFonts.Courier);
+  } else {
+    if (isBold && isItalic) fontRef = await pdfDoc.embedFont(StandardFonts.HelveticaBoldOblique);
+    else if (isBold) fontRef = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    else if (isItalic) fontRef = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
+    else fontRef = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  }
+
+  // Margin in points (72 points = 1 inch)
+  let marginPt = 36; // recommended (~0.5 in)
+  if (margin === 'small') marginPt = 20;
+  if (margin === 'large') marginPt = 54;
+
+  // Parse RGB
+  const hex = color.replace('#', '');
+  const r = parseInt(hex.substring(0, 2), 16) / 255 || 0.2;
+  const g = parseInt(hex.substring(2, 4), 16) / 255 || 0.2;
+  const b = parseInt(hex.substring(4, 6), 16) / 255 || 0.2;
+  const textColor = rgb(r, g, b);
+
+  const startPage = Math.max(1, Math.min(fromPage, totalPages));
+  const endPage = Math.min(totalPages, Math.max(startPage, toPage));
+
+  for (let i = startPage - 1; i <= endPage - 1; i++) {
+    const page = pdfDoc.getPage(i);
+    const { width, height } = page.getSize();
+    const currentNumber = firstNumber + (i - (startPage - 1));
+
+    // Construct text string
+    let label = `${currentNumber}`;
+    if (textPreset === 'page-n') {
+      label = `Page ${currentNumber}`;
+    } else if (textPreset === 'page-n-of-p') {
+      label = `Page ${currentNumber} of ${totalPages}`;
+    } else if (textPreset === 'custom') {
+      label = customText
+        .replace(/{n}/g, `${currentNumber}`)
+        .replace(/{p}/g, `${totalPages}`);
+    }
+
+    const textWidth = fontRef.widthOfTextAtSize(label, fontSize);
+    const textHeight = fontRef.heightAtSize(fontSize);
+
+    // Resolve active horizontal / vertical alignments
+    let activePos = position;
+    if (pageMode === 'facing') {
+      const isEven = (i + 1) % 2 === 0;
+      if (position.includes('right') && isEven) {
+        activePos = position.replace('right', 'left');
+      } else if (position.includes('left') && isEven) {
+        activePos = position.replace('left', 'right');
+      }
+    }
+
+    let x = marginPt;
+    let y = marginPt;
+
+    // Horizontal coordinates
+    if (activePos.includes('left')) {
+      x = marginPt;
+    } else if (activePos.includes('center')) {
+      x = (width - textWidth) / 2;
+    } else if (activePos.includes('right')) {
+      x = width - marginPt - textWidth;
+    }
+
+    // Vertical coordinates
+    if (activePos.startsWith('top')) {
+      y = height - marginPt - textHeight;
+    } else if (activePos.startsWith('middle')) {
+      y = (height - textHeight) / 2;
+    } else if (activePos.startsWith('bottom')) {
+      y = marginPt;
+    }
+
+    page.drawText(label, {
+      x,
+      y,
+      size: fontSize,
+      font: fontRef,
+      color: textColor,
+    });
+
+    if (isUnderline) {
+      page.drawLine({
+        start: { x, y: y - 2 },
+        end: { x: x + textWidth, y: y - 2 },
+        thickness: 0.8,
+        color: textColor,
+      });
+    }
+  }
+
+  const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
+  return {
+    blob: new Blob([pdfBytes], { type: 'application/pdf' }),
+    filename: `numbered_${file.name}`,
+    originalSize: file.size,
+    compressedSize: pdfBytes.byteLength,
+  };
+}
+
+
+/**
+ * Add text or image watermark to a PDF.
+ * @param {File} file - Target PDF file
+ * @param {Object} options - Watermark settings
+ */
+export async function addWatermarkToPDF(file, options) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`Cannot process: "${file.name}" is password-protected or encrypted.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const {
+    type = 'text', // 'text' | 'image'
+    text = 'CONFIDENTIAL',
+    imageFile = null,
+    position = 'middle-center',
+    isMosaic = false,
+    opacity = 0.5,
+    rotation = 45,
+    fromPage = 1,
+    toPage = 1,
+    layer = 'over', // 'over' | 'below'
+    fontFamily = 'Helvetica',
+    fontSize = 36,
+    isBold = false,
+    isItalic = false,
+    isUnderline = false,
+    color = '#E11D48',
+  } = options;
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+  const totalPages = pdfDoc.getPageCount();
+
+  // 1. Embed Font (if text watermark)
+  let fontRef;
+  if (type === 'text') {
+    if (fontFamily === 'Times') {
+      if (isBold && isItalic) fontRef = await pdfDoc.embedFont(StandardFonts.TimesRomanBoldItalic);
+      else if (isBold) fontRef = await pdfDoc.embedFont(StandardFonts.TimesRomanBold);
+      else if (isItalic) fontRef = await pdfDoc.embedFont(StandardFonts.TimesRomanItalic);
+      else fontRef = await pdfDoc.embedFont(StandardFonts.TimesRoman);
+    } else if (fontFamily === 'Courier') {
+      if (isBold && isItalic) fontRef = await pdfDoc.embedFont(StandardFonts.CourierBoldOblique);
+      else if (isBold) fontRef = await pdfDoc.embedFont(StandardFonts.CourierBold);
+      else if (isItalic) fontRef = await pdfDoc.embedFont(StandardFonts.CourierOblique);
+      else fontRef = await pdfDoc.embedFont(StandardFonts.Courier);
+    } else {
+      if (isBold && isItalic) fontRef = await pdfDoc.embedFont(StandardFonts.HelveticaBoldOblique);
+      else if (isBold) fontRef = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      else if (isItalic) fontRef = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
+      else fontRef = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    }
+  }
+
+  // 2. Embed Image (if image watermark)
+  let embeddedImg = null;
+  if (type === 'image' && imageFile) {
+    const imgBuffer = await imageFile.arrayBuffer();
+    if (imageFile.type.includes('png') || imageFile.name.toLowerCase().endsWith('.png')) {
+      embeddedImg = await pdfDoc.embedPng(imgBuffer);
+    } else {
+      embeddedImg = await pdfDoc.embedJpg(imgBuffer);
+    }
+  }
+
+  // Parse Color
+  const hex = color.replace('#', '');
+  const r = parseInt(hex.substring(0, 2), 16) / 255 || 0.88;
+  const g = parseInt(hex.substring(2, 4), 16) / 255 || 0.11;
+  const b = parseInt(hex.substring(4, 6), 16) / 255 || 0.28;
+  const textColor = rgb(r, g, b);
+
+  const startPage = Math.max(1, Math.min(fromPage, totalPages));
+  const endPage = Math.min(totalPages, Math.max(startPage, toPage));
+
+  for (let i = startPage - 1; i <= endPage - 1; i++) {
+    const page = pdfDoc.getPage(i);
+    const { width, height } = page.getSize();
+
+    const drawSingle = (cx, cy) => {
+      if (type === 'text' && fontRef) {
+        const textWidth = fontRef.widthOfTextAtSize(text || '', fontSize);
+        const textHeight = fontRef.heightAtSize(fontSize);
+        const rad = (rotation * Math.PI) / 180;
+
+        // Offset center to align rotation around text middle
+        const drawX = cx - (textWidth / 2) * Math.cos(rad) + (textHeight / 2) * Math.sin(rad);
+        const drawY = cy - (textWidth / 2) * Math.sin(rad) - (textHeight / 2) * Math.cos(rad);
+
+        page.drawText(text || '', {
+          x: drawX,
+          y: drawY,
+          size: fontSize,
+          font: fontRef,
+          color: textColor,
+          opacity: opacity,
+          rotate: degrees(rotation),
+        });
+
+        if (isUnderline) {
+          page.drawLine({
+            start: { x: drawX, y: drawY - 2 },
+            end: { x: drawX + textWidth * Math.cos(rad), y: drawY + textWidth * Math.sin(rad) - 2 },
+            thickness: 1.2,
+            color: textColor,
+            opacity: opacity,
+          });
+        }
+      } else if (type === 'image' && embeddedImg) {
+        const scaleFactor = Math.min(120 / embeddedImg.width, 120 / embeddedImg.height, 1);
+        const imgW = embeddedImg.width * scaleFactor;
+        const imgH = embeddedImg.height * scaleFactor;
+        const rad = (rotation * Math.PI) / 180;
+
+        const drawX = cx - (imgW / 2) * Math.cos(rad) + (imgH / 2) * Math.sin(rad);
+        const drawY = cy - (imgW / 2) * Math.sin(rad) - (imgH / 2) * Math.cos(rad);
+
+        page.drawImage(embeddedImg, {
+          x: drawX,
+          y: drawY,
+          width: imgW,
+          height: imgH,
+          opacity: opacity,
+          rotate: degrees(rotation),
+        });
+      }
+    };
+
+    if (isMosaic) {
+      // 3x3 Tile Grid across page
+      const cols = 3;
+      const rows = 3;
+      for (let c = 0; c < cols; c++) {
+        for (let rw = 0; rw < rows; rw++) {
+          const cx = (width / cols) * (c + 0.5);
+          const cy = (height / rows) * (rw + 0.5);
+          drawSingle(cx, cy);
+        }
+      }
+    } else {
+      // Position Matrix Coordinates
+      let cx = width / 2;
+      let cy = height / 2;
+
+      if (position.includes('left')) cx = width * 0.2;
+      else if (position.includes('right')) cx = width * 0.8;
+
+      if (position.startsWith('top')) cy = height * 0.8;
+      else if (position.startsWith('bottom')) cy = height * 0.2;
+
+      drawSingle(cx, cy);
+    }
+  }
+
+  const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
+  return {
+    blob: new Blob([pdfBytes], { type: 'application/pdf' }),
+    filename: `watermarked_${file.name}`,
+    originalSize: file.size,
+    compressedSize: pdfBytes.byteLength,
+  };
+}
+
+/**
+ * Crop PDF pages using visual rectangle bounds (x, y, width, height in % 0..100)
+ */
+export async function cropPDF(file, cropOptions) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`Cannot process: "${file.name}" is password-protected or encrypted.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const {
+    pagesMode = 'custom', // 'custom' | 'all' | 'current'
+    currentPage = 1,
+    box = { x: 5, y: 5, width: 90, height: 90 },
+    pageBoxes = {} // Mapping of { [pageNumber]: { x, y, width, height } }
+  } = cropOptions;
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+  const totalPages = pdfDoc.getPageCount();
+
+  const applyCropToPage = (page, cropRect) => {
+    const { width: pageWidth, height: pageHeight } = page.getSize();
+    const cropX = (cropRect.x / 100) * pageWidth;
+    const cropWidth = Math.max(10, (cropRect.width / 100) * pageWidth);
+    const cropHeight = Math.max(10, (cropRect.height / 100) * pageHeight);
+    const cropY = pageHeight - ((cropRect.y / 100) * pageHeight) - cropHeight;
+
+    page.setCropBox(cropX, Math.max(0, cropY), cropWidth, cropHeight);
+    page.setMediaBox(cropX, Math.max(0, cropY), cropWidth, cropHeight);
+  };
+
+  if (pagesMode === 'current') {
+    // Only crop the active page
+    const targetIdx = Math.max(0, Math.min(currentPage - 1, totalPages - 1));
+    const targetBox = pageBoxes[currentPage] || box;
+    applyCropToPage(pdfDoc.getPage(targetIdx), targetBox);
+  } else if (pagesMode === 'custom') {
+    // Only crop pages that have been explicitly modified in pageBoxes
+    const pages = pdfDoc.getPages();
+    pages.forEach((page, idx) => {
+      const pageNum = idx + 1;
+      if (pageBoxes[pageNum]) {
+        applyCropToPage(page, pageBoxes[pageNum]);
+      }
+    });
+  } else {
+    // 'all' mode: apply the same uniform box to all pages
+    const pages = pdfDoc.getPages();
+    pages.forEach((page) => {
+      applyCropToPage(page, box);
+    });
+  }
+
+  const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
+  return {
+    blob: new Blob([pdfBytes], { type: 'application/pdf' }),
+    filename: `cropped_${file.name}`,
+    originalSize: file.size,
+    compressedSize: pdfBytes.byteLength,
+  };
+}
+
+/**
+ * Protect PDF with password
+ */
+export async function protectPDF(file, password) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`"${file.name}" is already password-protected.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('password', password);
+
+  //const response = await fetch('/api/protect-pdf', {
+  const response = await fetch(`${API_BASE_URL}/api/protect-pdf`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to protect PDF.');
+  }
+
+  const blob = await response.blob();
+  const baseName = file.name.replace(/\.[^/.]+$/, '');
+  return {
+    blob,
+    filename: `${baseName}_protected.pdf`,
+    originalSize: file.size,
+    compressedSize: blob.size,
+  };
+}
+
+/**
+ * Unlock / Decrypt PDF with dual options (with password or automatic restriction removal)
+ */
+export async function unlockPDF(file, options = {}) {
+  const { mode = 'with-password', password = '' } = options;
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('mode', mode);
+  if (mode === 'with-password') {
+    formData.append('password', password);
+  }
+
+  //const response = await fetch('/api/unlock-pdf', {
+  const response = await fetch(`${API_BASE_URL}/api/unlock-pdf`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to unlock PDF document.');
+  }
+
+  const blob = await response.blob();
+  const baseName = file.name.replace(/\.[^/.]+$/, '');
+  return {
+    blob,
+    filename: `${baseName}_unlocked.pdf`,
+    originalSize: file.size,
+    compressedSize: blob.size,
+  };
+}
+
+/**
+ * Advanced AcroForm & Widget Field Parser
+ * Safely extracts existing form fields and maps their coordinates to normalized percentage values
+ * so they can be selected, edited, typed into, and deleted exactly like manually added fields.
+ */
+export async function extractPdfFormFields(file) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`"${file.name}" is password-protected.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+  const form = pdfDoc.getForm();
+  const fields = [];
+  const pages = pdfDoc.getPages();
+
+  try {
+    const rawFields = form.getFields();
+
+    rawFields.forEach((field, index) => {
+      try {
+        const name = field.getName();
+        const type = field.constructor.name;
+        const widgets = field.acroField.getWidgets();
+
+        widgets.forEach((widget, wIdx) => {
+          const rect = widget.getRectangle();
+          
+          // Resolve Page index for the widget
+          const pRef = widget.P();
+          let pageIndex = 0;
+          if (pRef) {
+            const foundIdx = pages.findIndex(p => p.ref === pRef);
+            if (foundIdx !== -1) pageIndex = foundIdx;
+          }
+
+          const targetPage = pages[pageIndex] || pages[0];
+          const { width: pWidth, height: pHeight } = targetPage.getSize();
+
+          // Convert PDF points (origin bottom-left) to Normalized DOM Percentages (origin top-left)
+          const widthPercent = Math.max(2, (rect.width / pWidth) * 100);
+          const heightPercent = Math.max(1.5, (rect.height / pHeight) * 100);
+          const xPercent = Math.max(0, Math.min(100 - widthPercent, (rect.x / pWidth) * 100));
+          const yPercent = Math.max(0, Math.min(100 - heightPercent, ((pHeight - rect.y - rect.height) / pHeight) * 100));
+
+          let fieldType = 'text';
+          let value = '';
+          let options = [];
+
+          if (type.includes('CheckBox')) {
+            fieldType = 'checkbox';
+            try { value = field.isChecked(); } catch { value = false; }
+          } else if (type.includes('Radio')) {
+            fieldType = 'radio';
+            try { 
+              value = field.getSelected() || ''; 
+              options = field.getOptions() || []; 
+            } catch { value = ''; }
+          } else if (type.includes('Dropdown') || type.includes('OptionList') || type.includes('Choice')) {
+            fieldType = type.includes('Dropdown') ? 'combobox' : 'listbox';
+            try { 
+              options = field.getOptions() || [];
+              const selected = field.getSelected();
+              value = Array.isArray(selected) ? selected[0] || '' : selected || '';
+            } catch { options = []; }
+          } else if (type.includes('Signature')) {
+            fieldType = 'signature';
+          } else {
+            fieldType = 'text';
+            try { value = field.getText() || ''; } catch { value = ''; }
+          }
+
+          fields.push({
+            id: `detected-${index}-${wIdx}-${Date.now()}`,
+            name: name || `Field_${index + 1}`,
+            originalName: name, // Track original AcroField name for delete/update
+            type: fieldType,
+            page: pageIndex + 1,
+            xPercent,
+            yPercent,
+            widthPercent,
+            heightPercent,
+            value: value,
+            options: options,
+            readOnly: false, // Make unlocked by default so user can edit in tool
+            required: field.isRequired ? field.isRequired() : false,
+            multiline: field.isMultiline ? field.isMultiline() : false,
+            includeIndicator: false,
+            indicatorText: 'Fill Here',
+            isExisting: true,
+            fontSize: 11,
+            fontFamily: 'Helvetica',
+            color: '#000000',
+            strokeColor: '#3b82f6',
+            isBold: false,
+            isItalic: false,
+            isUnderline: false
+          });
+        });
+      } catch (fErr) {
+        console.warn('Skipping unparseable form field:', fErr);
+      }
+    });
+  } catch (err) {
+    console.warn('AcroForm parsing fell back to standard view:', err);
+  }
+
+  return {
+    fields,
+    totalPages: pdfDoc.getPageCount()
+  };
+}
+
+/**
+ * Bake filled form data and create genuine, interactive, editable AcroForm widgets in the PDF.
+ * Purges original widgets so that deletions and drag-moves never duplicate or leave ghost fields.
+ */
+export async function savePdfForms(file, formFields) {
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`"${file.name}" is password-protected.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+  const form = pdfDoc.getForm();
+  const pages = pdfDoc.getPages();
+
+  // ------------------------------------------------------------------
+  // STEP 1: Physically purge all existing AcroForm fields and Widget Annots
+  // This prevents deleted fields from lingering and moved fields from duplicating!
+  // ------------------------------------------------------------------
+  try {
+    const existingAcroFields = [...form.getFields()];
+    existingAcroFields.forEach((f) => {
+      try {
+        form.removeField(f);
+      } catch (_) {}
+    });
+
+    // Clean up annotation references on each page so no ghost borders stay behind
+    pages.forEach((page) => {
+      const annots = page.node.Annots();
+      if (annots) {
+        for (let i = annots.size() - 1; i >= 0; i--) {
+          const annotRef = annots.get(i);
+          const annotDict = pdfDoc.context.lookup(annotRef);
+          const subtype = annotDict?.get(pdfDoc.context.obj('Subtype'))?.toString();
+          if (subtype === '/Widget') {
+            annots.remove(i);
+          }
+        }
+      }
+    });
+  } catch (cleanErr) {
+    console.warn('Cleanup error:', cleanErr);
+  }
+
+  // ------------------------------------------------------------------
+  // STEP 2: Re-embed fonts for interactive appearances
+  // ------------------------------------------------------------------
+  const fonts = {
+    Helvetica: await pdfDoc.embedFont(StandardFonts.Helvetica),
+    HelveticaBold: await pdfDoc.embedFont(StandardFonts.HelveticaBold),
+    Times: await pdfDoc.embedFont(StandardFonts.TimesRoman),
+    TimesBold: await pdfDoc.embedFont(StandardFonts.TimesRomanBold),
+    Courier: await pdfDoc.embedFont(StandardFonts.Courier),
+    CourierBold: await pdfDoc.embedFont(StandardFonts.CourierBold),
+  };
+
+  // ------------------------------------------------------------------
+  // STEP 3: Recreate ONLY the currently active fields at their latest coordinates
+  // ------------------------------------------------------------------
+  for (let i = 0; i < formFields.length; i++) {
+    const field = formFields[i];
+    const targetPage = pages[Math.max(0, Math.min(field.page - 1, pages.length - 1))];
+    const { width: pageWidth, height: pageHeight } = targetPage.getSize();
+
+    const pdfX = (field.xPercent / 100) * pageWidth;
+    const pdfWidth = (field.widthPercent / 100) * pageWidth;
+    const pdfHeight = (field.heightPercent / 100) * pageHeight;
+    const pdfY = pageHeight - ((field.yPercent / 100) * pageHeight) - pdfHeight;
+
+    let fontRef = fonts.Helvetica;
+    if (field.fontFamily === 'Times') fontRef = field.isBold ? fonts.TimesBold : fonts.Times;
+    else if (field.fontFamily === 'Courier') fontRef = field.isBold ? fonts.CourierBold : fonts.Courier;
+    else if (field.isBold) fontRef = fonts.HelveticaBold;
+
+    const targetFontSize = Math.max(7, Math.min(field.fontSize || 11, Math.round(pdfHeight * 0.75)));
+
+    const hex = (field.color || '#000000').replace('#', '');
+    const r = parseInt(hex.substring(0, 2), 16) / 255 || 0;
+    const g = parseInt(hex.substring(2, 4), 16) / 255 || 0;
+    const b = parseInt(hex.substring(4, 6), 16) / 255 || 0;
+    const textColor = rgb(r, g, b);
+
+    // 1. Static Form Text (Annotation only)
+    if (field.type === 'formtext') {
+      if (field.value) {
+        targetPage.drawText(String(field.value), {
+          x: pdfX,
+          y: pdfY + (pdfHeight / 2) - (targetFontSize / 2.5),
+          size: targetFontSize,
+          font: fontRef,
+          color: textColor,
+          maxWidth: pdfWidth
+        });
+
+        if (field.isUnderline) {
+          const textW = fontRef.widthOfTextAtSize(String(field.value), targetFontSize);
+          targetPage.drawLine({
+            start: { x: pdfX, y: pdfY + (pdfHeight / 2) - (targetFontSize / 2.5) - 2 },
+            end: { x: pdfX + Math.min(textW, pdfWidth), y: pdfY + (pdfHeight / 2) - (targetFontSize / 2.5) - 2 },
+            thickness: 1,
+            color: textColor
+          });
+        }
+      }
+      continue;
+    }
+
+    // 2. Field Indicator Stamp (If enabled)
+    if (field.includeIndicator) {
+      const indLabel = field.indicatorText || 'Sign Here';
+      const indFontSize = 8;
+      const indPadding = 4;
+      const indTextW = fonts.HelveticaBold.widthOfTextAtSize(indLabel, indFontSize);
+      const indBadgeW = indTextW + indPadding * 2;
+      const indBadgeH = 14;
+      const indX = Math.max(4, pdfX - indBadgeW - 8);
+      const indY = pdfY + (pdfHeight / 2) - (indBadgeH / 2);
+
+      targetPage.drawRectangle({
+        x: indX,
+        y: indY,
+        width: indBadgeW,
+        height: indBadgeH,
+        color: rgb(0.05, 0.55, 0.9),
+      });
+
+      targetPage.drawText(indLabel, {
+        x: indX + indPadding,
+        y: indY + 3.5,
+        size: indFontSize,
+        font: fonts.HelveticaBold,
+        color: rgb(1, 1, 1),
+      });
+    }
+
+    // 3. Recreate clean AcroForm Widgets with unique names
+    const cleanBase = (field.name || `field_${i}`).trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+    const uniqueFieldName = `${cleanBase}_${i}`;
+
+    try {
+      if (field.type === 'checkbox') {
+        const checkBox = form.createCheckBox(uniqueFieldName);
+        checkBox.addToPage(targetPage, {
+          x: pdfX,
+          y: pdfY,
+          width: pdfWidth,
+          height: pdfHeight,
+        });
+
+        if (field.value) checkBox.check();
+        else checkBox.uncheck();
+
+        if (field.readOnly) checkBox.enableReadOnly();
+        if (field.required) checkBox.enableRequired();
+      } else if (field.type === 'radio') {
+        const groupName = field.group || `RadioGroup_${field.page}`;
+        let radioGroup;
+        try {
+          radioGroup = form.getRadioGroup(groupName);
+        } catch (_) {
+          radioGroup = form.createRadioGroup(groupName);
+        }
+
+        const optionValue = field.name || `Option_${i}`;
+        radioGroup.addOptionToPage(optionValue, targetPage, {
+          x: pdfX,
+          y: pdfY,
+          width: pdfWidth,
+          height: pdfHeight,
+        });
+
+        if (field.value) radioGroup.select(optionValue);
+        if (field.readOnly) radioGroup.enableReadOnly();
+        if (field.required) radioGroup.enableRequired();
+      } else if (field.type === 'combobox') {
+        const dropdown = form.createDropdown(uniqueFieldName);
+        dropdown.addToPage(targetPage, {
+          x: pdfX,
+          y: pdfY,
+          width: pdfWidth,
+          height: pdfHeight,
+        });
+
+        const optionsList = field.options && field.options.length > 0
+          ? field.options
+          : ['Option 1', 'Option 2'];
+
+        dropdown.setOptions(optionsList);
+        if (field.value && optionsList.includes(field.value)) {
+          dropdown.select(field.value);
+        } else if (optionsList.length > 0) {
+          dropdown.select(optionsList[0]);
+        }
+
+        try { dropdown.setFontSize(targetFontSize); } catch (_) {}
+        dropdown.updateAppearances(fontRef);
+
+        if (field.readOnly) dropdown.enableReadOnly();
+        if (field.required) dropdown.enableRequired();
+      } else if (field.type === 'listbox') {
+        const optionList = form.createOptionList(uniqueFieldName);
+        optionList.addToPage(targetPage, {
+          x: pdfX,
+          y: pdfY,
+          width: pdfWidth,
+          height: pdfHeight,
+        });
+
+        const optionsList = field.options && field.options.length > 0
+          ? field.options
+          : ['Option 1', 'Option 2'];
+
+        optionList.setOptions(optionsList);
+        if (field.value && optionsList.includes(field.value)) {
+          optionList.select(field.value);
+        }
+
+        try { optionList.setFontSize(Math.max(6, targetFontSize - 1)); } catch (_) {}
+        optionList.updateAppearances(fontRef);
+
+        if (field.readOnly) optionList.enableReadOnly();
+        if (field.required) optionList.enableRequired();
+      } else if (field.type === 'signature') {
+        const tf = form.createTextField(uniqueFieldName);
+        tf.addToPage(targetPage, {
+          x: pdfX,
+          y: pdfY,
+          width: pdfWidth,
+          height: pdfHeight,
+        });
+
+        try { tf.setFontSize(Math.max(9, targetFontSize)); } catch (_) {}
+        if (field.value) tf.setText(String(field.value));
+        tf.updateAppearances(fonts.TimesBold);
+        if (field.readOnly) tf.enableReadOnly();
+      } else {
+        // Text field
+        const tf = form.createTextField(uniqueFieldName);
+        tf.addToPage(targetPage, {
+          x: pdfX,
+          y: pdfY,
+          width: pdfWidth,
+          height: pdfHeight,
+        });
+
+        if (field.multiline) tf.enableMultiline();
+        try { tf.setFontSize(targetFontSize); } catch (_) {}
+
+        if (field.value !== undefined && field.value !== '') {
+          tf.setText(String(field.value));
+        }
+
+        tf.updateAppearances(fontRef);
+        if (field.readOnly) tf.enableReadOnly();
+        if (field.required) tf.enableRequired();
+      }
+    } catch (err) {
+      console.warn(`Error writing field ${uniqueFieldName}:`, err);
+    }
+  }
+
+  const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
+  return {
+    blob: new Blob([pdfBytes], { type: 'application/pdf' }),
+    filename: `filled_${file.name}`,
+    originalSize: file.size,
+    compressedSize: pdfBytes.byteLength
+  };
+}
+
+/**
+ * Genuine In-Browser WebAssembly OCR Engine with Granular Real-Time Progress Tracking.
+ * Hooked into Tesseract's internal recognition logger for smooth, uninterrupted progress updates.
+ *
+ * @param {File} file - Scanned PDF file
+ * @param {Object} options - { language: 'eng', onProgress: Function, outputMode: 'searchable_pdf' | 'text' }
+ */
+export async function performPdfOcr(file, options = {}) {
+  const {
+    language = 'eng',
+    onProgress = () => {},
+    outputMode = 'searchable_pdf'
+  } = options;
+
+  const isLocked = await checkPdfPassword(file);
+  if (isLocked) {
+    const err = new Error(`"${file.name}" is password-protected.`);
+    err.lockedFiles = [file.name];
+    throw err;
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdfJsDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const totalPages = pdfJsDoc.numPages;
+
+  let currentPageNum = 1;
+
+  onProgress({ status: 'Loading OCR Engine & Models...', percent: 5 });
+
+  // Step 1: Hook Tesseract's real-time logger for granular sub-page progress updates
+  const worker = await createWorker(language, 1, {
+    logger: (m) => {
+      if (m && m.status === 'recognizing text' && typeof m.progress === 'number') {
+        // Calculate dynamic sub-page percentage
+        const pagePortion = 90 / totalPages;
+        const basePagePercent = 5 + (currentPageNum - 1) * pagePortion;
+        const currentSubPercent = Math.round(basePagePercent + m.progress * pagePortion);
+
+        onProgress({
+          status: `Scanning Page ${currentPageNum} of ${totalPages} (${Math.round(m.progress * 100)}%)...`,
+          percent: Math.min(95, currentSubPercent)
+        });
+      } else if (m && m.status && m.status.includes('loading')) {
+        onProgress({
+          status: `Loading language data (${m.status})...`,
+          percent: 8
+        });
+      }
+    }
+  });
+
+  const outputPdfDoc = await PDFDocument.create();
+  const helveticaFont = await outputPdfDoc.embedFont(StandardFonts.Helvetica);
+  let extractedFullText = '';
+
+  try {
+    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+      currentPageNum = pageNum;
+
+      onProgress({
+        status: `Rendering Page ${pageNum} of ${totalPages}...`,
+        percent: Math.round(5 + ((pageNum - 1) / totalPages) * 90)
+      });
+
+      const page = await pdfJsDoc.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 2.0 });
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+
+      await page.render({ canvasContext: ctx, viewport }).promise;
+
+      // Real-time recognition runs here; logger will stream granular progress updates automatically
+      const { data } = await worker.recognize(canvas);
+      extractedFullText += `--- Page ${pageNum} ---\n` + (data.text || '') + '\n\n';
+
+      if (outputMode === 'searchable_pdf') {
+        const imgDataUrl = canvas.toDataURL('image/jpeg', 0.88);
+        const imgBytes = await (await fetch(imgDataUrl)).arrayBuffer();
+        const embeddedImg = await outputPdfDoc.embedJpg(imgBytes);
+
+        const pdfPageW = viewport.width / 2.0;
+        const pdfPageH = viewport.height / 2.0;
+        const newPage = outputPdfDoc.addPage([pdfPageW, pdfPageH]);
+
+        newPage.drawImage(embeddedImg, {
+          x: 0,
+          y: 0,
+          width: pdfPageW,
+          height: pdfPageH,
+        });
+
+        // Stamp selectable text layer over coordinates
+        if (data.words && data.words.length > 0) {
+          const scaleX = pdfPageW / canvas.width;
+          const scaleY = pdfPageH / canvas.height;
+
+          for (const w of data.words) {
+            const wordText = (w.text || '').trim();
+            if (!wordText) continue;
+
+            const bbox = w.bbox;
+            const wordX = bbox.x0 * scaleX;
+            const wordWidth = Math.max(4, (bbox.x1 - bbox.x0) * scaleX);
+            const wordHeight = Math.max(6, (bbox.y1 - bbox.y0) * scaleY);
+            const wordY = pdfPageH - (bbox.y1 * scaleY);
+
+            try {
+              newPage.drawText(wordText, {
+                x: wordX,
+                y: wordY,
+                size: Math.max(5, Math.min(wordHeight * 0.9, 36)),
+                font: helveticaFont,
+                color: rgb(0, 0, 0),
+                opacity: 0,
+                maxWidth: wordWidth + 4
+              });
+            } catch (_) {
+              // Ignore unsupported character glyph exceptions safely
+            }
+          }
+        }
+      }
+    }
+  } finally {
+    await worker.terminate();
+  }
+
+  onProgress({ status: 'Finalizing PDF...', percent: 98 });
+
+  const baseName = file.name.replace(/\.[^/.]+$/, '');
+
+  if (outputMode === 'text') {
+    onProgress({ status: 'Done!', percent: 100 });
+    return {
+      blob: new Blob([extractedFullText], { type: 'text/plain;charset=utf-8' }),
+      filename: `${baseName}_ocr.txt`,
+      originalSize: file.size,
+      compressedSize: extractedFullText.length
+    };
+  }
+
+  const pdfBytes = await outputPdfDoc.save({ useObjectStreams: true });
+  onProgress({ status: 'Done!', percent: 100 });
+
+  return {
+    blob: new Blob([pdfBytes], { type: 'application/pdf' }),
+    filename: `${baseName}_searchable.pdf`,
+    originalSize: file.size,
+    compressedSize: pdfBytes.byteLength
+  };
+}

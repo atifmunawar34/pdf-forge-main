@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#1E1B4B"/>
+    </linearGradient>
+
+    <!-- Back Page Glow -->
+    <linearGradient id="backPageGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818CF8" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#C084FC" stop-opacity="0.4"/>
+    </linearGradient>
+
+    <!-- Primary Front Sheet Gradient (Forge Ember to Violet) -->
+    <linearGradient id="frontPageGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F43F5E"/>
+      <stop offset="50%" stop-color="#E11D48"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+
+    <!-- Forge Spark Glow -->
+    <linearGradient id="sparkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE047"/>
+      <stop offset="50%" stop-color="#FB923C"/>
+      <stop offset="100%" stop-color="#F43F5E"/>
+    </linearGradient>
+
+    <!-- Drop Shadow Filter -->
+    <filter id="forgeShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#F43F5E" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- Rounded App Tile -->
+  <rect width="512" height="512" rx="128" fill="url(#bgGrad)"/>
+  <rect width="504" height="504" x="4" y="4" rx="124" stroke="white" stroke-opacity="0.08" stroke-width="8"/>
+
+  <!-- Layer 1: Back Document Page -->
+  <path d="M190 120H330C343.255 120 354 130.745 354 144V340C354 353.255 343.255 364 330 364H190C176.745 364 166 353.255 166 340V144C166 130.745 176.745 120 190 120Z" 
+        fill="url(#backPageGrad)" transform="rotate(-10 260 242)"/>
+
+  <!-- Layer 2: Main Folded Document Page with Shadow -->
+  <g filter="url(#forgeShadow)">
+    <path d="M164 140C164 126.745 174.745 116 188 116H296L356 176V364C356 377.255 345.255 388 332 388H188C174.745 388 164 377.255 164 364V140Z" 
+          fill="url(#frontPageGrad)"/>
+  </g>
+
+  <!-- Folded Corner Effect -->
+  <path d="M296 116L356 176H308C296.954 176 288 167.046 288 156V116H296Z" 
+        fill="#FFE4E6" fill-opacity="0.85"/>
+
+  <!-- Document Line Accents -->
+  <rect x="204" y="220" width="80" height="10" rx="5" fill="white" fill-opacity="0.9"/>
+  <rect x="204" y="248" width="112" height="10" rx="5" fill="white" fill-opacity="0.6"/>
+
+  <!-- Layer 3: Central Forge Ember / Flame Spark -->
+  <path d="M260 278C260 278 288 306 288 326C288 341.464 275.464 354 260 354C244.536 354 232 341.464 232 326C232 308 260 278 260 278Z" 
+        fill="url(#sparkGrad)"/>
+  <circle cx="260" cy="332" r="8" fill="#FFFBEB"/>
+
+  <!-- Top-Right Ambient Energy Star -->
+  <path d="M380 94L384 108L398 112L384 116L380 130L376 116L362 112L376 108L380 94Z" fill="#FDE047"/>
+</svg>

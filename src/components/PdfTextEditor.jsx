@@ -382,7 +382,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   // ---------- canvas paint ops (logical px, dpr transform already applied) ----------
 
   const whiteoutBlockCanvas = (ctx, b) => {
-    const pad = 1;
+    const pad = 2;
     ctx.fillStyle = b.bgColor ? rgbCss(b.bgColor) : '#ffffff';
     ctx.fillRect(b.vx - pad, b.vy - pad, b.vw + pad * 2, Math.max(b.vh, b.vhDrawn || 0) + pad * 2);
   };
@@ -1092,7 +1092,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
                     onMouseLeave={() => setHoverId(null)}
                     className={`absolute transition-colors ${
                       ['edit', 'highlight', 'redact', 'underline', 'strikeout'].includes(mode) ? 'cursor-pointer' : 'cursor-default'
-                    } ${isActive ? 'outline-2 outline-rose-500 bg-rose-100/20' : hovered && !['pointer', 'add', 'draw', 'erase'].includes(mode) ? 'outline-1 outline-dashed outline-blue-400 bg-blue-50/20' : ''}`}
+                    } ${isActive ? '' : hovered && !['pointer', 'add', 'draw', 'erase'].includes(mode) ? 'outline-1 outline-dashed outline-blue-400 bg-blue-50/20' : ''}`}
                     style={{
                       left: b.vx, top: b.vy, width: b.vw,
                       height: Math.max(b.vh, b.vhDrawn || 0),
@@ -1132,6 +1132,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
                     fontStyle: activeBlock.font?.cssStyle || 'normal',
                     textDecoration: 'none',
                     color: fmt.color,
+                    caretColor: fmt.color,
                     pointerEvents: 'auto',
                   }}
                 />

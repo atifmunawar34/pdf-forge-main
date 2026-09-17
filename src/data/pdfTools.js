@@ -30,6 +30,16 @@ import {
   Sparkles,
   Languages,
   FileDown,
+  ArrowUpDown,
+  FilePlus2,
+  Combine,
+  Contrast,
+  FileType,
+  Images,
+  Paperclip,
+  Eraser,
+  FileCog,
+  Info,
 } from 'lucide-react';
 
 export const PDF_CATEGORIES = [
@@ -42,6 +52,8 @@ export const PDF_CATEGORIES = [
       { id: 'extract', name: 'Extract pages', desc: 'Pull specific pages into a new PDF.', icon: FolderInput, color: 'text-amber-500', bg: 'bg-amber-50' },
       { id: 'organize', name: 'Organize PDF', desc: 'Sort, reorder, and rotate document pages.', icon: FolderSync, color: 'text-amber-600', bg: 'bg-amber-50' },
       { id: 'scan', name: 'Scan to PDF', desc: 'Capture documents directly via camera/scanner.', icon: Scan, color: 'text-red-600', bg: 'bg-red-50' },
+      { id: 'reverse', name: 'Reverse Pages', desc: 'Flip the page order of the document.', icon: ArrowUpDown, color: 'text-orange-600', bg: 'bg-orange-50' },
+      { id: 'insert-blank', name: 'Insert Blank Pages', desc: 'Add blank pages at start, end, or after each page.', icon: FilePlus2, color: 'text-amber-500', bg: 'bg-amber-50' },
     ],
   },
   {
@@ -50,6 +62,8 @@ export const PDF_CATEGORIES = [
       { id: 'compress', name: 'Compress PDF', desc: 'Reduce file size while preserving document quality.', icon: Minimize2, color: 'text-emerald-500', bg: 'bg-emerald-50' },
       { id: 'repair', name: 'Repair PDF', desc: 'Recover damaged and corrupted PDF files.', icon: Wrench, color: 'text-green-600', bg: 'bg-green-50' },
       { id: 'ocr', name: 'OCR PDF', desc: 'Make scanned documents searchable and selectable.', icon: ScanText, color: 'text-teal-600', bg: 'bg-teal-50' },
+      { id: 'flatten', name: 'Flatten PDF', desc: 'Bake form fields and annotations into static content.', icon: Combine, color: 'text-teal-500', bg: 'bg-teal-50' },
+      { id: 'grayscale', name: 'Grayscale PDF', desc: 'Convert all pages to black & white for printing.', icon: Contrast, color: 'text-slate-600', bg: 'bg-slate-50' },
     ],
   },
   {
@@ -60,6 +74,10 @@ export const PDF_CATEGORIES = [
       { id: 'powerpoint-to-pdf', name: 'POWERPOINT to PDF', desc: 'Turn PPTX presentations into PDF slides.', icon: Presentation, color: 'text-orange-500', bg: 'bg-orange-50' },
       { id: 'excel-to-pdf', name: 'EXCEL to PDF', desc: 'Convert spreadsheets to formatted PDF tables.', icon: Sheet, color: 'text-emerald-600', bg: 'bg-emerald-50' },
       { id: 'html-to-pdf', name: 'HTML to PDF', desc: 'Render web pages and HTML strings to PDF.', icon: FileCode, color: 'text-amber-500', bg: 'bg-amber-50', badge: 'Not Accurate' },
+      { id: 'png-to-pdf', name: 'PNG to PDF', desc: 'Convert PNG images into a PDF document.', icon: FileImage, color: 'text-yellow-600', bg: 'bg-yellow-50' },
+      { id: 'webp-to-pdf', name: 'WebP to PDF', desc: 'Convert WebP images into a PDF document.', icon: Image, color: 'text-yellow-600', bg: 'bg-yellow-50' },
+      { id: 'txt-to-pdf', name: 'TXT to PDF', desc: 'Convert plain text files to PDF.', icon: FileType, color: 'text-slate-600', bg: 'bg-slate-50' },
+      { id: 'md-to-pdf', name: 'Markdown to PDF', desc: 'Render Markdown files into formatted PDF.', icon: FileCode, color: 'text-indigo-500', bg: 'bg-indigo-50' },
     ],
   },
   {
@@ -70,6 +88,12 @@ export const PDF_CATEGORIES = [
       { id: 'pdf-to-powerpoint', name: 'PDF to POWERPOINT', desc: 'Convert PDF files into PPTX slides.', icon: Presentation, color: 'text-orange-600', bg: 'bg-orange-50', badge: 'Not Accurate' },
       { id: 'pdf-to-excel', name: 'PDF to EXCEL', desc: 'Pull structured data straight into Excel sheets.', icon: FileSpreadsheet, color: 'text-green-600', bg: 'bg-green-50', badge: 'Not Accurate' },
       { id: 'pdf-to-pdfa', name: 'PDF to PDF/A', desc: 'Convert to ISO-compliant archive formats.', icon: FileCheck, color: 'text-slate-600', bg: 'bg-slate-50' },
+      { id: 'pdf-to-png', name: 'PDF to PNG', desc: 'Extract pages as high-resolution PNG images.', icon: Image, color: 'text-yellow-600', bg: 'bg-yellow-50' },
+      { id: 'pdf-to-webp', name: 'PDF to WebP', desc: 'Extract pages as compact WebP images.', icon: FileImage, color: 'text-yellow-600', bg: 'bg-yellow-50' },
+      { id: 'pdf-to-txt', name: 'PDF to TXT', desc: 'Extract all text content into a plain text file.', icon: FileType, color: 'text-slate-600', bg: 'bg-slate-50' },
+      { id: 'pdf-to-html', name: 'PDF to HTML', desc: 'Convert document text into a standalone webpage.', icon: FileCode, color: 'text-amber-600', bg: 'bg-amber-50' },
+      { id: 'extract-images', name: 'Extract Images', desc: 'Pull every embedded image out of a PDF as a ZIP.', icon: Images, color: 'text-emerald-600', bg: 'bg-emerald-50' },
+      { id: 'extract-attachments', name: 'Extract Attachments', desc: 'Download embedded file attachments as a ZIP.', icon: Paperclip, color: 'text-violet-600', bg: 'bg-violet-50' },
     ],
   },
   {
@@ -81,6 +105,8 @@ export const PDF_CATEGORIES = [
       { id: 'crop', name: 'Crop PDF', desc: 'Trim margins and modify page visible area.', icon: Crop, color: 'text-pink-500', bg: 'bg-pink-50' },
       { id: 'edit', name: 'Edit PDF', desc: 'Add text, shapes, and freehand annotations.', icon: Edit3, color: 'text-rose-600', bg: 'bg-rose-50' },
       { id: 'forms', name: 'PDF Forms', desc: 'Fill out interactive forms and checkboxes.', icon: FormInput, color: 'text-violet-600', bg: 'bg-violet-50' },
+      { id: 'metadata', name: 'Edit Metadata', desc: 'View and edit title, author, subject and keywords.', icon: FileCog, color: 'text-cyan-600', bg: 'bg-cyan-50' },
+      { id: 'page-info', name: 'PDF Inspector', desc: 'Inspect page count, dimensions, version and metadata.', icon: Info, color: 'text-sky-600', bg: 'bg-sky-50' },
     ],
   },
   {
@@ -91,6 +117,7 @@ export const PDF_CATEGORIES = [
       { id: 'sign', name: 'Sign PDF', desc: 'Create digital signatures and sign agreements.', icon: PenTool, color: 'text-indigo-600', bg: 'bg-indigo-50' },
       { id: 'redact', name: 'Redact PDF', desc: 'Permanently blackout sensitive information.', icon: EyeOff, color: 'text-slate-700', bg: 'bg-slate-50' },
       { id: 'compare', name: 'Compare PDF', desc: 'Side-by-side visual and text diff comparison.', icon: GitCompare, color: 'text-cyan-600', bg: 'bg-cyan-50' },
+      { id: 'remove-metadata', name: 'Remove Metadata', desc: 'Strip hidden document information for privacy.', icon: Eraser, color: 'text-slate-600', bg: 'bg-slate-50' },
     ],
   },
   {

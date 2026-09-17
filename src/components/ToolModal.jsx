@@ -16,6 +16,10 @@ export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles,
 
   const getFileInputAccept = () => {
     if (tool.id === 'jpg-to-pdf' || tool.id === 'scan') return 'image/jpeg,image/png,image/webp';
+    if (tool.id === 'png-to-pdf') return 'image/png';
+    if (tool.id === 'webp-to-pdf') return 'image/webp';
+    if (tool.id === 'txt-to-pdf') return '.txt,text/plain';
+    if (tool.id === 'md-to-pdf') return '.md,.markdown,.txt,text/markdown,text/plain';
     if (tool.id === 'word-to-pdf') return '.docx,.doc,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword';
     if (tool.id === 'powerpoint-to-pdf') return '.pptx,.ppt,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint';
     if (tool.id === 'excel-to-pdf') return '.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel';
@@ -232,7 +236,7 @@ export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles,
             <input
               type="file"
               id="modalFileInput"
-              multiple={tool.id === 'merge' || tool.id === 'jpg-to-pdf' || tool.id === 'scan' || tool.id === 'compare'}
+              multiple={tool.id === 'merge' || tool.id === 'jpg-to-pdf' || tool.id === 'scan' || tool.id === 'compare' || tool.id === 'png-to-pdf' || tool.id === 'webp-to-pdf'}
               accept={getFileInputAccept()}
               className="hidden"
               onChange={(e) => handleFilesSelected(e.target.files)}

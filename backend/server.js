@@ -532,6 +532,111 @@ app.post('/api/convert/pdf-to-excel', upload.single('file'), async (req, res) =>
   }
 });
 
+// Extract embedded assets (images / attachments) via PyMuPDF -> ZIP
+async function extractAssetsViaPython(req, res, mode) {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No PDF file uploaded.' });
+  }
+
+  const tempId = `extract_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const tempDir = path.join(os.tmpdir(), tempId);
+  const inputPdfPath = path.join(tempDir, 'input.pdf');
+  const outputZipPath = path.join(tempDir, 'output.zip');
+  const pythonScriptPath = path.join(__dirname, 'extract_assets.py');
+
+  try {
+    await fs.mkdir(tempDir, { recursive: true });
+    await fs.writeFile(inputPdfPath, req.file.buffer);
+    await runPython([pythonScriptPath, mode, inputPdfPath, outputZipPath]);
+    const zipBuffer = await fs.readFile(outputZipPath);
+    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${originalName}_${mode}.zip"`);
+    return res.send(zipBuffer);
+  } catch (error) {
+    console.error(`Extract ${mode} error:`, error);
+    const msg = (error.message || '').replace(/python failed with code \d+:\s*/i, '').trim();
+    return res.status(400).json({ error: msg || `Failed to extract ${mode}.` });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+app.post('/api/extract-images', upload.single('file'), (req, res) =>
+  extractAssetsViaPython(req, res, 'images')
+);
+app.post('/api/extract-attachments', upload.single('file'), (req, res) =>
+  extractAssetsViaPython(req, res, 'attachments')
+);
+
+// Fallback page/metadata ops via PyMuPDF (used when pdf-lib can't parse a file)
+app.post('/api/page-ops', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No PDF file uploaded.' });
+  }
+  const mode = req.body.mode;
+  const allowed = ['reverse', 'insert-blank', 'flatten', 'grayscale', 'remove-metadata', 'set-metadata'];
+  if (!allowed.includes(mode)) {
+    return res.status(400).json({ error: 'Invalid operation mode.' });
+  }
+
+  const tempId = `pageops_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const tempDir = path.join(os.tmpdir(), tempId);
+  const inputPdfPath = path.join(tempDir, 'input.pdf');
+  const outputPdfPath = path.join(tempDir, 'output.pdf');
+  const paramsPath = path.join(tempDir, 'params.json');
+  const pythonScriptPath = path.join(__dirname, 'page_ops.py');
+
+  try {
+    await fs.mkdir(tempDir, { recursive: true });
+    await fs.writeFile(inputPdfPath, req.file.buffer);
+    await fs.writeFile(paramsPath, req.body.params || '{}');
+    await runPython([pythonScriptPath, mode, inputPdfPath, outputPdfPath, paramsPath]);
+    const pdfBuffer = await fs.readFile(outputPdfPath);
+    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${originalName}_${mode}.pdf"`);
+    return res.send(pdfBuffer);
+  } catch (error) {
+    console.error(`page-ops ${mode} error:`, error);
+    const msg = (error.message || '').replace(/python failed with code \d+:\s*/i, '').trim();
+    return res.status(500).json({ error: msg || `Failed to run ${mode}.` });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+// Rebuild a .docx from edited plain text (after docx preview editing)
+app.post('/api/docx-from-text', async (req, res) => {
+  const { text, filename } = req.body || {};
+  if (typeof text !== 'string') {
+    return res.status(400).json({ error: 'Missing document text.' });
+  }
+  const tempId = `docx_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const tempDir = path.join(os.tmpdir(), tempId);
+  const inputPath = path.join(tempDir, 'input.txt');
+  const outputPath = path.join(tempDir, 'output.docx');
+  try {
+    await fs.mkdir(tempDir, { recursive: true });
+    await fs.writeFile(inputPath, text, 'utf8');
+    await runPython([path.join(__dirname, 'text_to_docx.py'), inputPath, outputPath]);
+    const outBuffer = await fs.readFile(outputPath).catch(() => null);
+    if (!outBuffer) {
+      return res.status(500).json({ error: 'Failed to build the edited document.' });
+    }
+    const safeName = String(filename || 'edited.docx').replace(/[^a-zA-Z0-9._-]/g, '_');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName.endsWith('.docx') ? safeName : `${safeName}.docx`}"`);
+    return res.send(outBuffer);
+  } catch (error) {
+    console.error('docx-from-text error:', error);
+    const msg = (error.message || '').replace(/python failed with code \d+:\s*/i, '').trim();
+    return res.status(500).json({ error: msg || 'Failed to build the edited document.' });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 // Protect PDF with Password
 app.post('/api/protect-pdf', upload.single('file'), async (req, res) => {
   if (!req.file) {

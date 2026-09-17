@@ -19,6 +19,14 @@ export default function App() {
   const [activeStudioSession, setActiveStudioSession] = useState(null);
   const [modalSeed, setModalSeed] = useState(null);
   const studioSessionRef = useRef(null);
+  const homeScrollRef = useRef(0);
+
+  // Restore the homepage scroll position so users land exactly where they left
+  const restoreHomeScroll = () => {
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: homeScrollRef.current, behavior: 'instant' });
+    });
+  };
 
   useEffect(() => {
     studioSessionRef.current = activeStudioSession;
@@ -69,6 +77,7 @@ export default function App() {
       // /tool/workspace deep links can't restore uploaded files — show the modal
       setActiveStudioSession(null);
       setActiveModalTool(tool);
+      if (!tool) restoreHomeScroll();
     };
     window.addEventListener('popstate', syncFromUrl);
     syncFromUrl();
@@ -76,13 +85,14 @@ export default function App() {
   }, []);
 
   const openTool = (tool) => {
+    homeScrollRef.current = window.scrollY;
     setActiveModalTool(tool);
   };
 
   const goHome = () => {
     setActiveModalTool(null);
     setActiveStudioSession(null);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    restoreHomeScroll();
   };
 
   const filteredCategories = useMemo(() => {
@@ -127,6 +137,21 @@ export default function App() {
         initialHtmlMode={activeStudioSession.htmlMode}
         onBack={handleStudioBack}
         onHome={goHome}
+        onSwitchTool={(toolId) => {
+          const target = findToolById(toolId);
+          if (!target) return;
+          setActiveStudioSession((prev) =>
+            prev
+              ? {
+                  tool: target,
+                  files: prev.files,
+                  imageCards: prev.imageCards,
+                  htmlCode: prev.htmlCode,
+                  htmlMode: prev.htmlMode,
+                }
+              : prev
+          );
+        }}
       />
     );
   }
@@ -209,6 +234,7 @@ export default function App() {
           onClose={() => {
             setModalSeed(null);
             setActiveModalTool(null);
+            restoreHomeScroll();
           }}
           onLaunchStudio={handleLaunchStudio}
           initialFiles={modalSeed?.files}

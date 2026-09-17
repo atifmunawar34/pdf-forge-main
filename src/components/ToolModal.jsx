@@ -7,7 +7,7 @@ import {
   checkExcelPassword
 } from '../utils/pdfWorker';
 
-export default function ToolModal({ tool, onClose, onLaunchStudio }) {
+export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles, initialImageCards, initialHtmlCode, initialHtmlMode }) {
   const [errorMsg, setErrorMsg] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
   const [lockedFiles, setLockedFiles] = useState([]);
@@ -153,6 +153,34 @@ export default function ToolModal({ tool, onClose, onLaunchStudio }) {
                 <p className="mt-1">{errorMsg}</p>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Previously selected files (returned from workspace) */}
+        {initialFiles && initialFiles.length > 0 && (
+          <div className="mb-5 p-4 bg-slate-50 border border-slate-200 rounded-2xl">
+            <p className="text-xs font-bold text-slate-700 mb-2">
+              {initialFiles.length} file{initialFiles.length > 1 ? 's' : ''} selected
+            </p>
+            <ul className="text-xs text-slate-500 space-y-1 mb-3 max-h-24 overflow-y-auto">
+              {initialFiles.map((f, i) => (
+                <li key={i} className="truncate">{f.name}</li>
+              ))}
+            </ul>
+            <button
+              onClick={() =>
+                onLaunchStudio(tool, {
+                  files: initialFiles,
+                  imageCards: initialImageCards || [],
+                  htmlCode: initialHtmlCode || '',
+                  htmlMode: initialHtmlMode || 'file',
+                })
+              }
+              className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold text-xs transition flex items-center justify-center space-x-2 cursor-pointer"
+            >
+              <span>Continue with these files</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
           </div>
         )}
 

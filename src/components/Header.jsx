@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Layers, ChevronDown, ShieldCheck, Sparkles } from 'lucide-react';
 import { PDF_CATEGORIES } from '../data/pdfTools';
 
-export default function Header({ onSelectTool }) {
+export default function Header({ onSelectTool, onHome }) {
   const [openDropdown, setOpenDropdown] = useState(null);
   const navRef = useRef(null);
 
@@ -20,7 +20,10 @@ export default function Header({ onSelectTool }) {
     <header className="sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-slate-200" ref={navRef}>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
         {/* Brand */}
-        <div className="flex items-center space-x-3 cursor-pointer" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
+        <div
+          className="flex items-center space-x-3 cursor-pointer"
+          onClick={() => (onHome ? onHome() : window.scrollTo({ top: 0, behavior: 'smooth' }))}
+        >
           <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-rose-500 to-indigo-600 flex items-center justify-center shadow-md shadow-rose-500/20">
             <Layers className="w-5 h-5 text-white" />
           </div>

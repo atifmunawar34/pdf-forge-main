@@ -1,7 +1,20 @@
 import { PDFDocument, degrees, rgb, StandardFonts } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
 import * as pdfjsLib from 'pdfjs-dist';
 import JSZip from 'jszip';
 import { createWorker } from 'tesseract.js';
+
+// Custom TTF watermark fonts served from public/fonts (family name -> file slug)
+const CUSTOM_FONT_FILES = {
+  Roboto: 'roboto',
+  'Open Sans': 'opensans',
+  Lato: 'lato',
+  Montserrat: 'montserrat',
+  'Playfair Display': 'playfair',
+  Oswald: 'oswald',
+  Pacifico: 'pacifico',
+  'Bebas Neue': 'bebasneue',
+};
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
@@ -384,6 +397,40 @@ export async function splitPDF(file) {
 }
 
 /**
+ * Embed an image into a PDFDocument by sniffing the actual file bytes.
+ * JPEG/PNG embed directly; other formats (WebP, BMP, GIF...) are decoded
+ * through the browser and re-encoded as PNG first.
+ */
+async function embedImageBySniffing(pdfDoc, file, imgBytes) {
+  const bytes = new Uint8Array(imgBytes);
+  const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const isPng =
+    bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+
+  if (isJpeg) return pdfDoc.embedJpg(imgBytes);
+  if (isPng) return pdfDoc.embedPng(imgBytes);
+
+  // Unsupported for pdf-lib (WebP, BMP, GIF, AVIF, ...): decode & convert to PNG
+  try {
+    const bitmap = await createImageBitmap(new Blob([imgBytes], { type: file.type }));
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    const pngBlob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    return pdfDoc.embedPng(await pngBlob.arrayBuffer());
+  } catch {
+    throw new Error(
+      `"${file.name}" could not be processed — the image is corrupted or uses an unsupported format. Please use JPG or PNG images.`
+    );
+  }
+}
+
+/**
  * Convert an ordered list of Image files into PDF with layout options.
  * @param {Array} imageItems - Array of image objects { file, rotation }
  * @param {Object} options - Orientation, Page size, Margin & Merge settings
@@ -413,13 +460,7 @@ export async function imagesToPDF(imageItems, options = {}) {
     const customRotation = item.rotation || 0;
     const imgBytes = await file.arrayBuffer();
 
-    let embeddedImg;
-    if (file.type.includes('png') || file.name.toLowerCase().endsWith('.png')) {
-      embeddedImg = await doc.embedPng(imgBytes);
-    } else {
-      embeddedImg = await doc.embedJpg(imgBytes);
-    }
-
+    const embeddedImg = await embedImageBySniffing(doc, file, imgBytes);
     if (!embeddedImg) return null;
 
     let pageWidth, pageHeight;
@@ -498,12 +539,7 @@ export async function imagesToPDF(imageItems, options = {}) {
     const customRotation = item.rotation || 0;
     const imgBytes = await file.arrayBuffer();
 
-    let embeddedImg;
-    if (file.type.includes('png') || file.name.toLowerCase().endsWith('.png')) {
-      embeddedImg = await pdfDoc.embedPng(imgBytes);
-    } else {
-      embeddedImg = await pdfDoc.embedJpg(imgBytes);
-    }
+    const embeddedImg = await embedImageBySniffing(pdfDoc, file, imgBytes);
 
     if (embeddedImg) {
       let pageWidth, pageHeight;
@@ -1567,15 +1603,36 @@ export async function addWatermarkToPDF(file, options) {
     isItalic = false,
     isUnderline = false,
     color = '#E11D48',
+    imageSize = 120,
   } = options;
 
   const arrayBuffer = await file.arrayBuffer();
   const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+  pdfDoc.registerFontkit(fontkit);
   const totalPages = pdfDoc.getPageCount();
 
   // 1. Embed Font (if text watermark)
   let fontRef;
+  let fontIsCustom = false;
   if (type === 'text') {
+    const slug = CUSTOM_FONT_FILES[fontFamily];
+    if (slug) {
+      const base = import.meta.env.BASE_URL || '/';
+      for (const weight of [isBold ? 700 : 400, 400]) {
+        try {
+          const resp = await fetch(`${base}fonts/${slug}-${weight}.ttf`);
+          if (resp.ok) {
+            fontRef = await pdfDoc.embedFont(await resp.arrayBuffer(), { subset: true });
+            fontIsCustom = true;
+            break;
+          }
+        } catch {
+          // try next weight / fall back to standard fonts
+        }
+      }
+    }
+  }
+  if (type === 'text' && !fontRef) {
     if (fontFamily === 'Times') {
       if (isBold && isItalic) fontRef = await pdfDoc.embedFont(StandardFonts.TimesRomanBoldItalic);
       else if (isBold) fontRef = await pdfDoc.embedFont(StandardFonts.TimesRomanBold);
@@ -1637,6 +1694,8 @@ export async function addWatermarkToPDF(file, options) {
           color: textColor,
           opacity: opacity,
           rotate: degrees(rotation),
+          // Simulate italics for custom TTFs (no italic variant embedded)
+          ...(fontIsCustom && isItalic ? { xSkew: degrees(-14) } : {}),
         });
 
         if (isUnderline) {
@@ -1649,7 +1708,7 @@ export async function addWatermarkToPDF(file, options) {
           });
         }
       } else if (type === 'image' && embeddedImg) {
-        const scaleFactor = Math.min(120 / embeddedImg.width, 120 / embeddedImg.height, 1);
+        const scaleFactor = Math.min(imageSize / embeddedImg.width, imageSize / embeddedImg.height);
         const imgW = embeddedImg.width * scaleFactor;
         const imgH = embeddedImg.height * scaleFactor;
         const rad = (rotation * Math.PI) / 180;
@@ -1679,6 +1738,11 @@ export async function addWatermarkToPDF(file, options) {
           drawSingle(cx, cy);
         }
       }
+    } else if (options.customPos) {
+      // Free drag position: center point as % of page (y measured from top)
+      const cx = (options.customPos.xPct / 100) * width;
+      const cy = height - (options.customPos.yPct / 100) * height;
+      drawSingle(cx, cy);
     } else {
       // Position Matrix Coordinates
       let cx = width / 2;

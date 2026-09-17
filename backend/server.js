@@ -71,8 +71,31 @@ app.use(cors({
 
 app.use(express.json());
 
-// Universal 1:1 Word to PDF conversion engine for arbitrary document layouts
+// Office/HTML to PDF via the PyMuPDF Story engine (office_to_pdf.py) — no LibreOffice needed
+async function convertViaPython(fileBuffer, ext) {
+  const tempId = `conv_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const tempDir = path.join(os.tmpdir(), tempId);
+  const inputPath = path.join(tempDir, `input${ext}`);
+  const outputPath = path.join(tempDir, 'output.pdf');
+
+  await fs.mkdir(tempDir, { recursive: true });
+  await fs.writeFile(inputPath, fileBuffer);
+  try {
+    await runPython([path.join(__dirname, 'office_to_pdf.py'), inputPath, outputPath]);
+    return await fs.readFile(outputPath);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// Word to PDF conversion engine
 async function convertDocxToPdf(fileBuffer, originalFilename) {
+  const ext = path.extname(originalFilename).toLowerCase() === '.doc' ? '.docx' : path.extname(originalFilename).toLowerCase() || '.docx';
+  return convertViaPython(fileBuffer, ext === '.doc' ? '.docx' : ext);
+}
+
+// Ghostscript-based legacy converter (kept for reference — superseded by convertViaPython)
+async function convertDocxToPdfLegacy(fileBuffer, originalFilename) {
   const tempId = `docx_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
   const tempDir = os.tmpdir();
   const inputPath = path.join(tempDir, `${tempId}_${originalFilename}`);
@@ -256,7 +279,8 @@ app.post('/api/convert/powerpoint-to-pdf', upload.single('file'), async (req, re
       }
     }
 
-    const pdfBuffer = await libreConvert(buffer, '.pdf', undefined);
+    const ext = path.extname(req.file.originalname).toLowerCase() === '.ppt' ? '.pptx' : path.extname(req.file.originalname).toLowerCase() || '.pptx';
+    const pdfBuffer = await convertViaPython(buffer, ext);
     const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
 
     res.setHeader('Content-Type', 'application/pdf');
@@ -264,7 +288,7 @@ app.post('/api/convert/powerpoint-to-pdf', upload.single('file'), async (req, re
     return res.send(pdfBuffer);
   } catch (error) {
     console.error('PowerPoint conversion failed:', error);
-    return res.status(500).json({ error: 'Failed to convert presentation with LibreOffice.' });
+    return res.status(500).json({ error: 'Failed to convert presentation to PDF.' });
   }
 });
 
@@ -280,7 +304,7 @@ app.post('/api/convert/html-to-pdf', upload.single('file'), async (req, res) => 
       return res.status(400).json({ error: 'No HTML file or content provided.' });
     }
 
-    const pdfBuffer = await libreConvert(htmlBuffer, '.pdf', undefined);
+    const pdfBuffer = await convertViaPython(htmlBuffer, '.html');
     const originalName = req.file
       ? req.file.originalname.replace(/\.[^/.]+$/, '')
       : 'rendered_html';
@@ -290,7 +314,7 @@ app.post('/api/convert/html-to-pdf', upload.single('file'), async (req, res) => 
     return res.send(pdfBuffer);
   } catch (error) {
     console.error('HTML conversion failed:', error);
-    return res.status(500).json({ error: 'Failed to convert HTML to PDF with LibreOffice.' });
+    return res.status(500).json({ error: 'Failed to convert HTML to PDF.' });
   }
 });
 
@@ -319,7 +343,8 @@ app.post('/api/convert/excel-to-pdf', upload.single('file'), async (req, res) =>
       }
     }
 
-    const pdfBuffer = await libreConvert(buffer, '.pdf', undefined);
+    const ext = path.extname(req.file.originalname).toLowerCase() === '.xls' ? '.xlsx' : path.extname(req.file.originalname).toLowerCase() || '.xlsx';
+    const pdfBuffer = await convertViaPython(buffer, ext);
     const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
 
     res.setHeader('Content-Type', 'application/pdf');
@@ -327,62 +352,30 @@ app.post('/api/convert/excel-to-pdf', upload.single('file'), async (req, res) =>
     return res.send(pdfBuffer);
   } catch (error) {
     console.error('Excel conversion error:', error);
-    return res.status(500).json({ error: 'Failed to convert Excel spreadsheet with LibreOffice.' });
+    return res.status(500).json({ error: 'Failed to convert Excel spreadsheet to PDF.' });
   }
 });
 
-// Ghostscript PDF Compression Function
-async function compressWithGhostscript(inputBuffer, qualityLevel = 45) {
+// PDF compression via PyMuPDF + Pillow (compress_pdf.py) — no Ghostscript needed
+async function compressWithEngine(inputBuffer, qualityLevel = 45) {
   const tempId = `compress_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-  const tempDir = os.tmpdir();
-  const inputPath = path.join(tempDir, `${tempId}_in.pdf`);
-  const outputPath = path.join(tempDir, `${tempId}_out.pdf`);
+  const tempDir = path.join(os.tmpdir(), tempId);
+  const inputPath = path.join(tempDir, 'input.pdf');
+  const outputPath = path.join(tempDir, 'output.pdf');
 
+  await fs.mkdir(tempDir, { recursive: true });
   await fs.writeFile(inputPath, inputBuffer);
-
-  // Map compression percentage slider to Ghostscript PDF settings
-  let pdfSetting = '/ebook'; // Balanced (150 DPI)
-  if (qualityLevel <= 30) {
-    pdfSetting = '/printer'; // High quality (300 DPI)
-  } else if (qualityLevel >= 65) {
-    pdfSetting = '/screen'; // Maximum compression (72 DPI)
+  try {
+    await runPython([
+      path.join(__dirname, 'compress_pdf.py'),
+      inputPath,
+      outputPath,
+      String(qualityLevel),
+    ]);
+    return await fs.readFile(outputPath);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
-
-  const gsArgs = [
-    '-sDEVICE=pdfwrite',
-    '-dCompatibilityLevel=1.4',
-    `-dPDFSETTINGS=${pdfSetting}`,
-    '-dNOPAUSE',
-    '-dQUIET',
-    '-dBATCH',
-    `-sOutputFile=${outputPath}`,
-    inputPath,
-  ];
-
-  return new Promise((resolve, reject) => {
-    const gs = spawn('gs', gsArgs);
-
-    gs.on('close', async (code) => {
-      try {
-        if (code === 0) {
-          const compressedBuffer = await fs.readFile(outputPath);
-          resolve(compressedBuffer);
-        } else {
-          reject(new Error(`Ghostscript exited with code ${code}`));
-        }
-      } catch (err) {
-        reject(err);
-      } finally {
-        // Cleanup temp files immediately
-        await fs.unlink(inputPath).catch(() => {});
-        await fs.unlink(outputPath).catch(() => {});
-      }
-    });
-
-    gs.on('error', (err) => {
-      reject(err);
-    });
-  });
 }
 
 // 5. Compress PDF Endpoint
@@ -395,7 +388,7 @@ app.post('/api/compress-pdf', upload.single('file'), async (req, res) => {
     const compressionPercent = parseInt(req.body.compressionPercent || '45', 10);
     const originalSize = req.file.buffer.length;
 
-    const compressedBuffer = await compressWithGhostscript(req.file.buffer, compressionPercent);
+    const compressedBuffer = await compressWithEngine(req.file.buffer, compressionPercent);
 
     // Fallback if the file is already maximally compressed
     const finalBuffer = compressedBuffer.length < originalSize ? compressedBuffer : req.file.buffer;
@@ -408,7 +401,7 @@ app.post('/api/compress-pdf', upload.single('file'), async (req, res) => {
 
     return res.send(finalBuffer);
   } catch (error) {
-    console.error('Ghostscript compression error:', error);
+    console.error('PDF compression error:', error);
     return res.status(500).json({ error: 'Failed to compress PDF.' });
   }
 });
@@ -463,37 +456,12 @@ app.post('/api/convert/pdf-to-powerpoint', upload.single('file'), async (req, re
     await fs.mkdir(tempDir, { recursive: true });
     await fs.writeFile(inputPdfPath, req.file.buffer);
 
-    // Run LibreOffice with impress_pdf_import filter
-    await new Promise((resolve, reject) => {
-      const lo = spawn('libreoffice', [
-        '--headless',
-        '--invisible',
-        '--nocrashreport',
-        '--nodefault',
-        '--nofirststartwizard',
-        '--infilter=impress_pdf_import',
-        '--convert-to',
-        'pptx',
-        '--outdir',
-        tempDir,
-        inputPdfPath,
-      ]);
-
-      let stderr = '';
-      lo.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      lo.on('close', (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new Error(`LibreOffice exited with code ${code}. Error: ${stderr}`));
-        }
-      });
-
-      lo.on('error', (err) => reject(err));
-    });
+    // PyMuPDF page render + python-pptx slide assembly (pdf_to_pptx.py)
+    await runPython([
+      path.join(__dirname, 'pdf_to_pptx.py'),
+      inputPdfPath,
+      outputPptxPath,
+    ]);
 
     const pptxBuffer = await fs.readFile(outputPptxPath);
     const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
@@ -583,32 +551,13 @@ app.post('/api/protect-pdf', upload.single('file'), async (req, res) => {
   try {
     await fs.writeFile(inputPath, req.file.buffer);
 
-    // Ghostscript password protection arguments
-    const gsArgs = [
-      '-sDEVICE=pdfwrite',
-      '-dCompatibilityLevel=1.4',
-      `-sOwnerPassword=${password}`,
-      `-sUserPassword=${password}`,
-      '-dEncryptionR=3',
-      '-dKeyLength=128',
-      '-dPermissions=-4',
-      '-dNOPAUSE',
-      '-dQUIET',
-      '-dBATCH',
-      `-sOutputFile=${outputPath}`,
+    // pikepdf AES-256 password protection (protect_pdf.py)
+    await runPython([
+      path.join(__dirname, 'protect_pdf.py'),
       inputPath,
-    ];
-
-    await new Promise((resolve, reject) => {
-      const gs = spawn('gs', gsArgs);
-      let stderr = '';
-      gs.stderr.on('data', (d) => (stderr += d.toString()));
-      gs.on('close', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`Ghostscript protection failed: ${stderr}`));
-      });
-      gs.on('error', (err) => reject(err));
-    });
+      outputPath,
+      password,
+    ]);
 
     const protectedBuffer = await fs.readFile(outputPath);
     const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');

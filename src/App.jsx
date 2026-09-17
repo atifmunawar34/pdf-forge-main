@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import Header from './components/Header';
 import ToolCard from './components/ToolCard';
 import ToolModal from './components/ToolModal';
@@ -8,10 +8,82 @@ import Footer from './components/Footer';
 import { PDF_CATEGORIES } from './data/pdfTools';
 import { Search, Lock, Sparkles, Server } from 'lucide-react';
 
+const BASE_URL = import.meta.env.BASE_URL || '/';
+
+const findToolById = (id) =>
+  PDF_CATEGORIES.flatMap((c) => c.tools).find((t) => t.id === id) || null;
+
 export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeModalTool, setActiveModalTool] = useState(null);
   const [activeStudioSession, setActiveStudioSession] = useState(null);
+  const [modalSeed, setModalSeed] = useState(null);
+  const studioSessionRef = useRef(null);
+
+  useEffect(() => {
+    studioSessionRef.current = activeStudioSession;
+  }, [activeStudioSession]);
+
+  // Keep the URL in sync with app state:
+  //   /pdf-forge/<tool>           -> upload modal
+  //   /pdf-forge/<tool>/workspace -> editing workspace
+  useEffect(() => {
+    const id = activeStudioSession?.tool?.id || activeModalTool?.id;
+    const target = activeStudioSession
+      ? `${BASE_URL}${id}/workspace`
+      : id
+        ? `${BASE_URL}${id}`
+        : BASE_URL;
+    if (window.location.pathname !== target) {
+      window.history.pushState(null, '', target);
+    }
+  }, [activeModalTool, activeStudioSession]);
+
+  // Keep state in sync with the URL (browser back/forward + deep links)
+  useEffect(() => {
+    const syncFromUrl = () => {
+      // Legacy hash links like /#/split still work
+      let rel = window.location.hash.replace(/^#\/?/, '');
+      if (!rel) {
+        const path = window.location.pathname;
+        rel = (path.startsWith(BASE_URL) ? path.slice(BASE_URL.length) : path.replace(/^\/+/, ''))
+          .replace(/\/+$/, '');
+      }
+      const [toolId, sub] = rel.split('/');
+      const tool = findToolById(toolId);
+
+      // Seed the upload modal with the previous session's files when stepping
+      // back out of a workspace for the same tool
+      const prev = studioSessionRef.current;
+      setModalSeed(
+        prev && tool && prev.tool.id === tool.id
+          ? {
+              files: prev.files,
+              imageCards: prev.imageCards,
+              htmlCode: prev.htmlCode,
+              htmlMode: prev.htmlMode,
+            }
+          : null
+      );
+
+      // /tool/workspace deep links can't restore uploaded files — show the modal
+      setActiveStudioSession(null);
+      setActiveModalTool(tool);
+    };
+    window.addEventListener('popstate', syncFromUrl);
+    syncFromUrl();
+    return () => window.removeEventListener('popstate', syncFromUrl);
+  }, []);
+
+  const openTool = (tool) => {
+    setActiveModalTool(tool);
+  };
+
+  const goHome = () => {
+    setActiveModalTool(null);
+    setActiveStudioSession(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   const filteredCategories = useMemo(() => {
     if (!searchQuery.trim()) return PDF_CATEGORIES;
@@ -27,6 +99,7 @@ export default function App() {
   }, [searchQuery]);
 
   const handleLaunchStudio = (tool, sessionData) => {
+    setModalSeed(null);
     setActiveModalTool(null);
     setActiveStudioSession({
       tool,
@@ -38,9 +111,9 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleBackToHome = () => {
-    setActiveStudioSession(null);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+  // Stepwise back from workspace -> tool upload modal (previous history entry)
+  const handleStudioBack = () => {
+    window.history.back();
   };
 
   // If a tool session is active, render the dedicated full-screen studio
@@ -52,7 +125,8 @@ export default function App() {
         initialImageCards={activeStudioSession.imageCards}
         initialHtmlCode={activeStudioSession.htmlCode}
         initialHtmlMode={activeStudioSession.htmlMode}
-        onBack={handleBackToHome}
+        onBack={handleStudioBack}
+        onHome={goHome}
       />
     );
   }
@@ -60,7 +134,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans antialiased flex flex-col justify-between">
       <div>
-        <Header onSelectTool={(tool) => setActiveModalTool(tool)} />
+        <Header onSelectTool={openTool} onHome={goHome} />
 
         {/* Hero Section */}
         <section className="py-14 px-4 sm:px-6 lg:px-8 max-w-5xl mx-auto text-center">
@@ -115,7 +189,7 @@ export default function App() {
                   <ToolCard
                     key={tool.id}
                     tool={tool}
-                    onSelect={(selected) => setActiveModalTool(selected)}
+                    onSelect={openTool}
                   />
                 ))}
               </div>
@@ -126,14 +200,21 @@ export default function App() {
         <Reviews />
       </div>
 
-      <Footer />
+      <Footer onSelectTool={openTool} />
 
       {/* Upload & Security Modal */}
       {activeModalTool && (
         <ToolModal
           tool={activeModalTool}
-          onClose={() => setActiveModalTool(null)}
+          onClose={() => {
+            setModalSeed(null);
+            setActiveModalTool(null);
+          }}
           onLaunchStudio={handleLaunchStudio}
+          initialFiles={modalSeed?.files}
+          initialImageCards={modalSeed?.imageCards}
+          initialHtmlCode={modalSeed?.htmlCode}
+          initialHtmlMode={modalSeed?.htmlMode}
         />
       )}
     </div>

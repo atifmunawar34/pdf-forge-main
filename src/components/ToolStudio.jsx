@@ -58,7 +58,8 @@ import {
   PenTool,
   Sparkles,
   Languages,
-  GitCompare
+  GitCompare,
+  Layers
 } from 'lucide-react';
 import PdfTextEditor from './PdfTextEditor';
 import {
@@ -103,7 +104,19 @@ import {
   renderBlobPdfPreview
 } from '../utils/pdfWorker';
 
-export default function ToolStudio({ tool, initialFiles, initialImageCards, initialHtmlCode, initialHtmlMode, onBack }) {
+// Custom TTF watermark fonts served from public/fonts (family name -> file slug)
+const WM_CUSTOM_FONTS = {
+  Roboto: 'roboto',
+  'Open Sans': 'opensans',
+  Lato: 'lato',
+  Montserrat: 'montserrat',
+  'Playfair Display': 'playfair',
+  Oswald: 'oswald',
+  Pacifico: 'pacifico',
+  'Bebas Neue': 'bebasneue',
+};
+
+export default function ToolStudio({ tool, initialFiles, initialImageCards, initialHtmlCode, initialHtmlMode, onBack, onHome }) {
   const [files, setFiles] = useState(initialFiles || []);
   const [imageCards, setImageCards] = useState(initialImageCards || []);
   const [htmlInputMode, setHtmlInputMode] = useState(initialHtmlMode || 'file');
@@ -214,6 +227,39 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
     color: '#334155'
   });
 
+  // Watermark single-page preview state
+  const [wmPreviewPage, setWmPreviewPage] = useState(1);
+  const [wmPreview, setWmPreview] = useState(null);
+  const [wmPreviewLoading, setWmPreviewLoading] = useState(false);
+  const wmPreviewCache = useRef({});
+  const wmPageRef = useRef(null);
+  const wmLoadedFonts = useRef(new Set());
+
+  // Drag the watermark anywhere on the preview page (stores center as % of page)
+  const startWmDrag = (e) => {
+    if (watermarkOptions.isMosaic) return;
+    const pageEl = wmPageRef.current;
+    if (!pageEl) return;
+    e.preventDefault();
+    const pageRect = pageEl.getBoundingClientRect();
+    const elRect = e.currentTarget.getBoundingClientRect();
+    const grabOffsetX = e.clientX - (elRect.left + elRect.width / 2);
+    const grabOffsetY = e.clientY - (elRect.top + elRect.height / 2);
+
+    const onMove = (ev) => {
+      const xPct = Math.max(0, Math.min(100, ((ev.clientX - grabOffsetX - pageRect.left) / pageRect.width) * 100));
+      const yPct = Math.max(0, Math.min(100, ((ev.clientY - grabOffsetY - pageRect.top) / pageRect.height) * 100));
+      setWatermarkOptions((prev) => ({ ...prev, customPos: { xPct, yPct } }));
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    onMove(e);
+  };
+
   // Add Watermark Options State
   const [watermarkOptions, setWatermarkOptions] = useState({
     type: 'text',
@@ -221,6 +267,8 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
     imageFile: null,
     imagePreviewUrl: '',
     position: 'middle-center',
+    customPos: null,
+    imageSize: 120,
     isMosaic: false,
     opacity: 1.0,
     rotation: 0,
@@ -956,6 +1004,45 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
     setSignDataUrl(canvas.toDataURL('image/png'));
   };
 
+  // Drag the signature anywhere on the preview page (pointer-capture based)
+  const signPageRef = useRef(null);
+  const signDraggingRef = useRef(false);
+  const signDragState = useRef(null);
+
+  const startSignDrag = (e) => {
+    const pageEl = signPageRef.current;
+    if (!pageEl) return;
+    e.preventDefault();
+    e.stopPropagation();
+    signDraggingRef.current = true;
+    const pageRect = pageEl.getBoundingClientRect();
+    const elRect = e.currentTarget.getBoundingClientRect();
+    signDragState.current = {
+      grabOffX: e.clientX - elRect.left,
+      grabOffY: e.clientY - elRect.top,
+      hPct: (elRect.height / pageRect.height) * 100,
+      pageRect,
+    };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+
+  const moveSignDrag = (e) => {
+    const d = signDragState.current;
+    if (!d) return;
+    const xPct = ((e.clientX - d.grabOffX - d.pageRect.left) / d.pageRect.width) * 100;
+    const yPct = ((e.clientY - d.grabOffY - d.pageRect.top) / d.pageRect.height) * 100;
+    setSignPos((prev) => ({
+      ...prev,
+      xPct: Math.max(0, Math.min(100 - prev.widthPct, xPct)),
+      yPct: Math.max(0, Math.min(100 - d.hPct, yPct)),
+    }));
+  };
+
+  const endSignDrag = (e) => {
+    signDragState.current = null;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+  };
+
   const handleSignatureUpload = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -999,6 +1086,26 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
 
   useEffect(() => () => stopScanCamera(), []);
 
+  // Load custom TTF fonts into the browser so the preview matches the PDF
+  useEffect(() => {
+    const fam = watermarkOptions.fontFamily;
+    const slug = WM_CUSTOM_FONTS[fam];
+    if (!slug || wmLoadedFonts.current.has(fam)) return;
+    wmLoadedFonts.current.add(fam);
+    const base = import.meta.env.BASE_URL || '/';
+    [400, 700].forEach(async (weight) => {
+      try {
+        const ff = new FontFace(`WM-${fam}`, `url(${base}fonts/${slug}-${weight}.ttf)`, {
+          weight: String(weight),
+        });
+        await ff.load();
+        document.fonts.add(ff);
+      } catch {
+        // weight not available (e.g. Pacifico/Bebas have no 700)
+      }
+    });
+  }, [watermarkOptions.fontFamily]);
+
   const handleWatermarkImageUpload = (e) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -1009,6 +1116,34 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
       }));
     }
   };
+
+  // Render the watermark preview page at higher resolution (cached per page)
+  useEffect(() => {
+    if (tool?.id !== 'watermark' || !files[0] || isRenderingPages) return;
+    const page = Math.max(1, Math.min(wmPreviewPage, totalPages || 1));
+    let cancelled = false;
+    const render = async () => {
+      if (wmPreviewCache.current[page]) {
+        setWmPreview(wmPreviewCache.current[page]);
+        setWmPreviewLoading(false);
+        return;
+      }
+      setWmPreviewLoading(true);
+      try {
+        const r = await renderSinglePdfPage(files[0], page, 1.3);
+        wmPreviewCache.current[page] = r;
+        if (!cancelled) setWmPreview(r);
+      } catch (err) {
+        console.error('Watermark preview render failed:', err);
+      } finally {
+        if (!cancelled) setWmPreviewLoading(false);
+      }
+    };
+    render();
+    return () => {
+      cancelled = true;
+    };
+  }, [tool?.id, files, wmPreviewPage, totalPages, isRenderingPages]);
 
   const handleMergeDragStart = (e, index) => {
     setDraggedMergeIndex(index);
@@ -1389,6 +1524,21 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
     return map[pos] || 'top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2';
   };
 
+  const getPositionPreviewClasses = (pos) => {
+    const map = {
+      'top-left': 'top-6 left-6',
+      'top-center': 'top-6 left-1/2 -translate-x-1/2',
+      'top-right': 'top-6 right-6',
+      'middle-left': 'top-1/2 left-6 -translate-y-1/2',
+      'middle-center': 'top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2',
+      'middle-right': 'top-1/2 right-6 -translate-y-1/2',
+      'bottom-left': 'bottom-6 left-6',
+      'bottom-center': 'bottom-6 left-1/2 -translate-x-1/2',
+      'bottom-right': 'bottom-6 right-6'
+    };
+    return map[pos] || 'top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2';
+  };
+
   const renderSingleFileThumbnailCard = (file) => {
     let IconComp = FileText;
     let badgeText = 'DOC';
@@ -1751,13 +1901,27 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
 
       <header className="sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-slate-200 shrink-0">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-12 sm:h-16 flex items-center justify-between">
-          <button
-            onClick={onBack}
-            className="flex items-center space-x-1.5 text-slate-600 hover:text-slate-900 font-semibold text-xs sm:text-sm px-2.5 py-1 rounded-xl hover:bg-slate-100 transition cursor-pointer"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>Back to Home</span>
-          </button>
+          <div className="flex items-center space-x-3">
+            <button
+              onClick={onHome || onBack}
+              className="flex items-center space-x-2 cursor-pointer"
+              title="Back to homepage"
+            >
+              <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-gradient-to-tr from-rose-500 to-indigo-600 flex items-center justify-center shadow-sm">
+                <Layers className="w-4 h-4 text-white" />
+              </div>
+              <span className="hidden sm:inline text-base font-black tracking-tight text-slate-900">
+                PDF<span className="text-rose-500">Forge</span>
+              </span>
+            </button>
+            <button
+              onClick={onBack}
+              className="flex items-center space-x-1.5 text-slate-600 hover:text-slate-900 font-semibold text-xs sm:text-sm px-2.5 py-1 rounded-xl hover:bg-slate-100 transition cursor-pointer"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back</span>
+            </button>
+          </div>
 
           <div className="flex items-center space-x-2 sm:space-x-3">
             <div className={`w-7 h-7 sm:w-8 sm:h-8 rounded-lg ${tool?.bg} ${tool?.color} flex items-center justify-center`}>
@@ -2999,39 +3163,167 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                       <p className="text-sm">Rendering document preview...</p>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 pt-4 max-h-[560px] overflow-y-auto pr-1">
-                      {thumbnails.map((thumb, idx) => {
-                        const inRange =
-                          thumb.pageNumber >= watermarkOptions.fromPage &&
-                          thumb.pageNumber <= watermarkOptions.toPage;
-                        return (
-                          <div
-                            key={thumb.id}
-                            className="relative rounded-2xl border-2 border-slate-200 bg-slate-50 shadow-xs overflow-hidden p-3 flex flex-col items-center justify-center min-h-[200px]"
-                          >
-                            <img src={thumb.dataUrl} alt={`Page ${idx + 1}`} className="max-h-44 object-contain shadow-sm bg-white" />
-                            {inRange && !watermarkOptions.isMosaic && (
+                    <div className="pt-4">
+                      {/* Page navigation */}
+                      <div className="flex items-center justify-center space-x-3 mb-4 text-xs font-semibold">
+                        <button
+                          type="button"
+                          disabled={wmPreviewPage <= 1}
+                          onClick={() => setWmPreviewPage((p) => Math.max(1, p - 1))}
+                          className="flex items-center space-x-1 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                        >
+                          <ArrowLeft className="w-3.5 h-3.5" />
+                          <span>Prev</span>
+                        </button>
+                        <span className="text-slate-600">
+                          Page
+                          <input
+                            type="number"
+                            min={1}
+                            max={totalPages}
+                            value={wmPreviewPage}
+                            onChange={(e) => {
+                              const v = parseInt(e.target.value, 10);
+                              if (!isNaN(v)) setWmPreviewPage(Math.max(1, Math.min(v, totalPages || 1)));
+                            }}
+                            className="w-14 mx-1.5 px-2 py-1 border border-slate-200 rounded-lg text-center"
+                          />
+                          of {totalPages}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={wmPreviewPage >= totalPages}
+                          onClick={() => setWmPreviewPage((p) => Math.min(totalPages, p + 1))}
+                          className="flex items-center space-x-1 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                        >
+                          <span>Next</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      {/* Single-page preview with live watermark overlay */}
+                      <div className="flex justify-center">
+                        <div
+                          ref={wmPageRef}
+                          className="relative inline-block rounded-xl overflow-hidden shadow-md border border-slate-200 bg-white"
+                        >
+                          {wmPreviewLoading && (
+                            <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/60">
+                              <Loader2 className="w-6 h-6 animate-spin text-fuchsia-500" />
+                            </div>
+                          )}
+                          {wmPreview ? (
+                            <img
+                              src={wmPreview.dataUrl}
+                              alt={`Page ${wmPreviewPage}`}
+                              className="block max-h-[540px] w-auto"
+                            />
+                          ) : (
+                            <div className="w-[420px] h-[540px] bg-slate-100" />
+                          )}
+
+                          {wmPreview &&
+                            wmPreviewPage >= watermarkOptions.fromPage &&
+                            wmPreviewPage <= watermarkOptions.toPage &&
+                            !watermarkOptions.isMosaic && (
                               <div
-                                className={`absolute w-4 h-4 bg-rose-500 rounded-full shadow-md border-2 border-white transition-all duration-150 ${getPositionDotClasses(
-                                  watermarkOptions.position
-                                )}`}
-                              />
+                                onPointerDown={startWmDrag}
+                                className={`absolute cursor-grab active:cursor-grabbing touch-none select-none ${
+                                  watermarkOptions.customPos ? '' : getPositionPreviewClasses(watermarkOptions.position)
+                                }`}
+                                style={
+                                  watermarkOptions.customPos
+                                    ? {
+                                        left: `${watermarkOptions.customPos.xPct}%`,
+                                        top: `${watermarkOptions.customPos.yPct}%`,
+                                        transform: 'translate(-50%, -50%)',
+                                      }
+                                    : undefined
+                                }
+                              >
+                                <div
+                                  style={{
+                                    transform: `rotate(${-(watermarkOptions.rotation || 0)}deg)`,
+                                    opacity: watermarkOptions.opacity ?? 0.5,
+                                  }}
+                                >
+                                  {watermarkOptions.type === 'image' && watermarkOptions.imagePreviewUrl ? (
+                                    <img
+                                      src={watermarkOptions.imagePreviewUrl}
+                                      alt="watermark"
+                                      className="object-contain"
+                                      style={{ maxWidth: watermarkOptions.imageSize * 0.65, maxHeight: watermarkOptions.imageSize * 0.65 }}
+                                    />
+                                  ) : (
+                                    <span
+                                      className="whitespace-nowrap"
+                                      style={{
+                                        color: watermarkOptions.color,
+                                        fontSize: `${Math.max(10, Math.round((watermarkOptions.fontSize || 36) * 0.55))}px`,
+                                        fontWeight: watermarkOptions.isBold ? 700 : 500,
+                                        fontStyle: watermarkOptions.isItalic ? 'italic' : 'normal',
+                                        textDecoration: watermarkOptions.isUnderline ? 'underline' : 'none',
+                                        fontFamily: WM_CUSTOM_FONTS[watermarkOptions.fontFamily]
+                                          ? `'WM-${watermarkOptions.fontFamily}', sans-serif`
+                                          : watermarkOptions.fontFamily === 'Times'
+                                            ? 'Georgia, serif'
+                                            : watermarkOptions.fontFamily === 'Courier'
+                                              ? 'Courier New, monospace'
+                                              : 'Helvetica, Arial, sans-serif',
+                                      }}
+                                    >
+                                      {watermarkOptions.text || 'WATERMARK'}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
                             )}
-                            {inRange && watermarkOptions.isMosaic && (
-                              <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 p-4 pointer-events-none">
+
+                          {wmPreview &&
+                            wmPreviewPage >= watermarkOptions.fromPage &&
+                            wmPreviewPage <= watermarkOptions.toPage &&
+                            watermarkOptions.isMosaic && (
+                              <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 p-6 pointer-events-none">
                                 {[...Array(9)].map((_, dotIdx) => (
-                                  <div key={dotIdx} className="flex items-center justify-center">
-                                    <div className="w-2.5 h-2.5 bg-rose-500/80 rounded-full border border-white" />
+                                  <div key={dotIdx} className="flex items-center justify-center overflow-hidden">
+                                    <div
+                                      style={{
+                                        transform: `rotate(${-(watermarkOptions.rotation || 0)}deg)`,
+                                        opacity: watermarkOptions.opacity ?? 0.5,
+                                      }}
+                                    >
+                                      {watermarkOptions.type === 'image' && watermarkOptions.imagePreviewUrl ? (
+                                        <img
+                                          src={watermarkOptions.imagePreviewUrl}
+                                          alt="watermark"
+                                          className="object-contain"
+                                          style={{ maxWidth: watermarkOptions.imageSize * 0.4, maxHeight: watermarkOptions.imageSize * 0.4 }}
+                                        />
+                                      ) : (
+                                        <span
+                                          className="whitespace-nowrap"
+                                          style={{
+                                            color: watermarkOptions.color,
+                                            fontSize: `${Math.max(9, Math.round((watermarkOptions.fontSize || 36) * 0.35))}px`,
+                                            fontWeight: watermarkOptions.isBold ? 700 : 500,
+                                          }}
+                                        >
+                                          {watermarkOptions.text || 'WATERMARK'}
+                                        </span>
+                                      )}
+                                    </div>
                                   </div>
                                 ))}
                               </div>
                             )}
-                            <span className="absolute bottom-2 right-2 text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800/80 text-white">
-                              {idx + 1}
-                            </span>
-                          </div>
-                        );
-                      })}
+                        </div>
+                      </div>
+
+                      <p className="mt-3 text-center text-[11px] text-slate-400">
+                        {wmPreviewPage >= watermarkOptions.fromPage && wmPreviewPage <= watermarkOptions.toPage
+                          ? `Drag the watermark anywhere on the page — applies to page${watermarkOptions.fromPage === watermarkOptions.toPage ? ` ${watermarkOptions.fromPage}` : `s ${watermarkOptions.fromPage}–${watermarkOptions.toPage}`}`
+                          : `Page ${wmPreviewPage} is outside the selected range (${watermarkOptions.fromPage}–${watermarkOptions.toPage}) — no watermark here`}
+                      </p>
                     </div>
                   )}
                 </div>
@@ -3085,6 +3377,14 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                             <option value="Helvetica">Arial / Helvetica</option>
                             <option value="Times">Times New Roman</option>
                             <option value="Courier">Courier</option>
+                            <option value="Roboto">Roboto</option>
+                            <option value="Open Sans">Open Sans</option>
+                            <option value="Lato">Lato</option>
+                            <option value="Montserrat">Montserrat</option>
+                            <option value="Playfair Display">Playfair Display</option>
+                            <option value="Oswald">Oswald</option>
+                            <option value="Pacifico">Pacifico</option>
+                            <option value="Bebas Neue">Bebas Neue</option>
                           </select>
 
                           <div className="flex items-center space-x-0.5 border border-slate-200 rounded-lg p-0.5 bg-slate-50">
@@ -3112,13 +3412,37 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                           </div>
                         </div>
                       </div>
+
+                      <div>
+                        <label className="font-semibold text-slate-700 flex justify-between text-[11px]">
+                          <span>Size:</span>
+                          <span className="text-slate-500">{watermarkOptions.fontSize}pt</span>
+                        </label>
+                        <input
+                          type="range"
+                          min={10}
+                          max={120}
+                          value={watermarkOptions.fontSize}
+                          onChange={(e) => setWatermarkOptions({ ...watermarkOptions, fontSize: parseInt(e.target.value, 10) })}
+                          className="w-full accent-rose-500 cursor-pointer"
+                        />
+                      </div>
                     </div>
                   ) : (
                     <div>
                       <label className="font-semibold text-slate-700 block mb-1">Image:</label>
+                      {watermarkOptions.imagePreviewUrl && (
+                        <div className="mb-2 p-2 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-center">
+                          <img
+                            src={watermarkOptions.imagePreviewUrl}
+                            alt="Watermark preview"
+                            className="max-h-20 object-contain"
+                          />
+                        </div>
+                      )}
                       <label className="flex items-center justify-center space-x-2 p-3 bg-rose-50 hover:bg-rose-100 border-2 border-dashed border-rose-300 text-rose-700 font-bold rounded-2xl cursor-pointer transition">
                         <ImageIcon className="w-4 h-4" />
-                        <span>{watermarkOptions.imageFile ? watermarkOptions.imageFile.name : 'ADD IMAGE'}</span>
+                        <span className="truncate max-w-[180px]">{watermarkOptions.imageFile ? watermarkOptions.imageFile.name : 'ADD IMAGE'}</span>
                         <input
                           type="file"
                           accept="image/png,image/jpeg"
@@ -3126,6 +3450,21 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                           className="hidden"
                         />
                       </label>
+
+                      <div className="mt-3">
+                        <label className="font-semibold text-slate-700 flex justify-between text-[11px]">
+                          <span>Size:</span>
+                          <span className="text-slate-500">{watermarkOptions.imageSize}pt</span>
+                        </label>
+                        <input
+                          type="range"
+                          min={40}
+                          max={400}
+                          value={watermarkOptions.imageSize}
+                          onChange={(e) => setWatermarkOptions({ ...watermarkOptions, imageSize: parseInt(e.target.value, 10) })}
+                          className="w-full accent-rose-500 cursor-pointer"
+                        />
+                      </div>
                     </div>
                   )}
 
@@ -3142,7 +3481,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                             key={pos}
                             type="button"
                             disabled={watermarkOptions.isMosaic}
-                            onClick={() => setWatermarkOptions({ ...watermarkOptions, position: pos })}
+                            onClick={() => setWatermarkOptions({ ...watermarkOptions, position: pos, customPos: null })}
                             className={`rounded-md transition-colors flex items-center justify-center cursor-pointer ${
                               watermarkOptions.position === pos && !watermarkOptions.isMosaic
                                 ? 'bg-rose-500 text-white shadow-xs'
@@ -3756,8 +4095,13 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                     <button type="button" onClick={() => changeFileInputRef.current?.click()} className="text-rose-600 font-bold cursor-pointer">Change File</button>
                   </div>
                   <div
+                    ref={signPageRef}
                     className="relative mx-auto max-w-xl cursor-crosshair"
                     onClick={(e) => {
+                      if (signDraggingRef.current) {
+                        signDraggingRef.current = false;
+                        return;
+                      }
                       const rect = e.currentTarget.getBoundingClientRect();
                       setSignPos((prev) => ({
                         ...prev,
@@ -3775,7 +4119,13 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                       <img
                         src={signDataUrl}
                         alt="Signature placement"
-                        className="absolute pointer-events-none"
+                        draggable={false}
+                        onDragStart={(e) => e.preventDefault()}
+                        onPointerDown={startSignDrag}
+                        onPointerMove={moveSignDrag}
+                        onPointerUp={endSignDrag}
+                        onPointerCancel={endSignDrag}
+                        className="absolute cursor-grab active:cursor-grabbing touch-none select-none z-10"
                         style={{ left: `${signPos.xPct}%`, top: `${signPos.yPct}%`, width: `${signPos.widthPct}%` }}
                       />
                     )}
@@ -3789,7 +4139,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                 </div>
                 <div className="lg:col-span-4 bg-white border border-slate-200 rounded-3xl p-6 space-y-4 shadow-sm text-xs">
                   <h3 className="font-bold text-slate-900 text-base border-b pb-3 flex items-center gap-2"><PenTool className="w-4 h-4 text-indigo-600" /> Sign PDF</h3>
-                  <p className="text-slate-500">Draw, type, or upload a signature, then click the page to place it.</p>
+                  <p className="text-slate-500">Draw, type, or upload a signature, then drag it on the page to position it.</p>
                   <canvas
                     ref={signPadRef}
                     width={360}

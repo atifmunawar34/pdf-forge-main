@@ -1003,6 +1003,56 @@ app.post('/api/edit-pdf-text', upload.single('file'), async (req, res) => {
   }
 });
 
+// ==============================
+//  TEMPLATES HUB
+// ==============================
+
+const TEMPLATES_PATH = path.join(__dirname, 'data', 'templates.json');
+const TPL_USAGE_PATH = path.join(__dirname, 'data', 'template-usage.json');
+const fsSync = require('fs');
+
+let templatesData = { categories: [], templates: [] };
+let templatesMtime = 0;
+function getTemplatesData() {
+  try {
+    const { mtimeMs } = fsSync.statSync(TEMPLATES_PATH);
+    if (mtimeMs !== templatesMtime) {
+      templatesData = JSON.parse(fsSync.readFileSync(TEMPLATES_PATH, 'utf8'));
+      templatesMtime = mtimeMs;
+    }
+  } catch (e) {
+    if (!templatesMtime) console.warn('templates.json not loaded:', e.message);
+  }
+  return templatesData;
+}
+getTemplatesData();
+
+let templateUsage = {};
+try {
+  templateUsage = JSON.parse(fsSync.readFileSync(TPL_USAGE_PATH, 'utf8'));
+} catch {}
+
+app.get('/api/templates', (req, res) => {
+  const data = getTemplatesData();
+  const templates = data.templates.map((t) => ({
+    ...t,
+    usage: templateUsage[t.id] || {},
+  }));
+  res.json({ categories: data.categories, templates });
+});
+
+// Lightweight usage analytics: view | preview | use | download
+app.post('/api/templates/:id/track', (req, res) => {
+  const { type } = req.body || {};
+  if (!['view', 'preview', 'use', 'download'].includes(type)) {
+    return res.status(400).json({ error: 'invalid type' });
+  }
+  const u = (templateUsage[req.params.id] = templateUsage[req.params.id] || {});
+  u[type] = (u[type] || 0) + 1;
+  fs.writeFile(TPL_USAGE_PATH, JSON.stringify(templateUsage)).catch(() => {});
+  res.json({ ok: true });
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Conversion server running on port ${PORT}`);

@@ -17,6 +17,11 @@ export default defineConfig({
   ],
   server: {
     host: true,
+    watch: {
+      // Backend writes usage/data JSON during requests — ignore it or every
+      // write triggers a full-page reload (infinite refresh loop).
+      ignored: ['**/backend/**'],
+    },
     proxy: {
       '/api': {
         target: 'http://localhost:5100',

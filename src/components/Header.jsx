@@ -1,10 +1,18 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Layers, ChevronDown, ShieldCheck, Sparkles } from 'lucide-react';
+import { Layers, ChevronDown, ShieldCheck, Sparkles, LayoutTemplate } from 'lucide-react';
 import { PDF_CATEGORIES } from '../data/pdfTools';
+import { fetchTemplates } from '../utils/templatesApi';
 
-export default function Header({ onSelectTool, onHome }) {
+export default function Header({ onSelectTool, onHome, onTemplates }) {
   const [openDropdown, setOpenDropdown] = useState(null);
+  const [tplCats, setTplCats] = useState([]);
   const navRef = useRef(null);
+
+  useEffect(() => {
+    fetchTemplates()
+      .then((d) => setTplCats(d.categories || []))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     function handleClickOutside(event) {
@@ -34,6 +42,42 @@ export default function Header({ onSelectTool, onHome }) {
 
         {/* Quick Tools Dropdown Menu */}
         <nav className="hidden md:flex items-center space-x-1">
+          {/* Templates mega menu */}
+          <div className="relative">
+            <button
+              onClick={() => setOpenDropdown(openDropdown === '__tpl' ? null : '__tpl')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1 transition ${
+                openDropdown === '__tpl'
+                  ? 'bg-slate-100 text-slate-900'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              }`}
+            >
+              <LayoutTemplate className="w-3.5 h-3.5 text-rose-500" />
+              <span>Templates</span>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+            </button>
+            {openDropdown === '__tpl' && (
+              <div className="absolute top-full left-0 mt-2 w-72 bg-white rounded-2xl shadow-xl border border-slate-100 py-2 z-50 animate-in fade-in zoom-in-95 duration-100 max-h-[70vh] overflow-y-auto">
+                <button
+                  onClick={() => { onTemplates?.(null); setOpenDropdown(null); }}
+                  className="w-full px-4 py-2 text-left text-xs font-bold text-rose-600 hover:bg-rose-50 transition"
+                >
+                  All Templates →
+                </button>
+                <div className="h-px bg-slate-100 my-1" />
+                {tplCats.map((c) => (
+                  <button
+                    key={c.slug}
+                    onClick={() => { onTemplates?.(c.slug); setOpenDropdown(null); }}
+                    className="w-full px-4 py-2 text-left text-xs text-slate-700 hover:bg-slate-50 hover:text-rose-600 transition"
+                  >
+                    {c.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           {PDF_CATEGORIES.slice(0, 4).map((category) => (
             <div key={category.title} className="relative">
               <button

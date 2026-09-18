@@ -5,8 +5,13 @@ import ToolModal from './components/ToolModal';
 import ToolStudio from './components/ToolStudio';
 import Reviews from './components/Reviews';
 import Footer from './components/Footer';
+import TemplatesHub from './components/TemplatesHub';
+import TemplateDetail from './components/TemplateDetail';
+import TemplateEditor from './components/TemplateEditor';
+import TemplateCard from './components/TemplateCard';
 import { PDF_CATEGORIES } from './data/pdfTools';
-import { Search, Lock, Sparkles, Server } from 'lucide-react';
+import { Search, Lock, Sparkles, Server, ArrowRight } from 'lucide-react';
+import { fetchTemplates, findTemplate } from './utils/templatesApi';
 
 const BASE_URL = import.meta.env.BASE_URL || '/';
 
@@ -20,6 +25,12 @@ export default function App() {
   const [modalSeed, setModalSeed] = useState(null);
   const studioSessionRef = useRef(null);
   const homeScrollRef = useRef(0);
+  // tplRoute: null | {view:'templates'|'detail'|'editor', cat, slug}
+  const [tplRoute, setTplRoute] = useState(null);
+  const [tplData, setTplData] = useState(null);
+  // Set true inside nav handlers so the push effect only writes to history
+  // after a real user navigation — never on mount or passive re-renders.
+  const navRef = useRef(false);
 
   // Restore the homepage scroll position so users land exactly where they left
   const restoreHomeScroll = () => {
@@ -32,20 +43,40 @@ export default function App() {
     studioSessionRef.current = activeStudioSession;
   }, [activeStudioSession]);
 
-  // Keep the URL in sync with app state:
-  //   /pdf-forge/<tool>           -> upload modal
-  //   /pdf-forge/<tool>/workspace -> editing workspace
+  // Load the template library once (homepage section + templates pages share it)
   useEffect(() => {
-    const id = activeStudioSession?.tool?.id || activeModalTool?.id;
-    const target = activeStudioSession
-      ? `${BASE_URL}${id}/workspace`
-      : id
-        ? `${BASE_URL}${id}`
-        : BASE_URL;
+    fetchTemplates().then(setTplData).catch(() => {});
+  }, []);
+
+  // Keep the URL in sync with app state:
+  //   /pdf-forge/<tool>                         -> upload modal
+  //   /pdf-forge/<tool>/workspace               -> editing workspace
+  //   /pdf-forge/templates[/cat[/slug[/edit]]]  -> templates pages
+  useEffect(() => {
+    if (!navRef.current) return;
+    navRef.current = false;
+    let target;
+    if (tplRoute) {
+      target =
+        tplRoute.view === 'editor'
+          ? `${BASE_URL}templates/${tplRoute.cat}/${tplRoute.slug}/edit`
+          : tplRoute.view === 'detail'
+            ? `${BASE_URL}templates/${tplRoute.cat}/${tplRoute.slug}`
+            : tplRoute.cat
+              ? `${BASE_URL}templates/${tplRoute.cat}`
+              : `${BASE_URL}templates`;
+    } else {
+      const id = activeStudioSession?.tool?.id || activeModalTool?.id;
+      target = activeStudioSession
+        ? `${BASE_URL}${id}/workspace`
+        : id
+          ? `${BASE_URL}${id}`
+          : BASE_URL;
+    }
     if (window.location.pathname !== target) {
       window.history.pushState(null, '', target);
     }
-  }, [activeModalTool, activeStudioSession]);
+  }, [activeModalTool, activeStudioSession, tplRoute]);
 
   // Keep state in sync with the URL (browser back/forward + deep links)
   useEffect(() => {
@@ -57,7 +88,20 @@ export default function App() {
         rel = (path.startsWith(BASE_URL) ? path.slice(BASE_URL.length) : path.replace(/^\/+/, ''))
           .replace(/\/+$/, '');
       }
-      const [toolId, sub] = rel.split('/');
+      // Templates section routes
+      if (rel === 'templates' || rel.startsWith('templates/')) {
+        const [, cat, slug, sub] = rel.split('/');
+        setModalSeed(null);
+        setActiveModalTool(null);
+        setActiveStudioSession(null);
+        if (sub === 'edit' && slug) setTplRoute({ view: 'editor', cat, slug });
+        else if (slug) setTplRoute({ view: 'detail', cat, slug });
+        else setTplRoute({ view: 'templates', cat: cat || null });
+        return;
+      }
+      setTplRoute(null);
+
+      const [toolId] = rel.split('/');
       const tool = findToolById(toolId);
 
       // Seed the upload modal with the previous session's files when stepping
@@ -85,14 +129,37 @@ export default function App() {
   }, []);
 
   const openTool = (tool) => {
+    navRef.current = true;
     homeScrollRef.current = window.scrollY;
+    setTplRoute(null);
     setActiveModalTool(tool);
   };
 
   const goHome = () => {
+    navRef.current = true;
     setActiveModalTool(null);
     setActiveStudioSession(null);
+    setTplRoute(null);
     restoreHomeScroll();
+  };
+
+  // Templates navigation — `cat` may arrive as a click event, keep strings only
+  const openTemplates = (cat = null) => {
+    navRef.current = true;
+    setTplRoute({ view: 'templates', cat: typeof cat === 'string' ? cat : null });
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  };
+
+  const previewTemplate = (tpl) => {
+    navRef.current = true;
+    setTplRoute({ view: 'detail', cat: tpl.category, slug: tpl.slug });
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  };
+
+  const editTemplate = (tpl) => {
+    navRef.current = true;
+    setTplRoute({ view: 'editor', cat: tpl.category, slug: tpl.slug });
+    window.scrollTo({ top: 0, behavior: 'instant' });
   };
 
   const filteredCategories = useMemo(() => {
@@ -109,6 +176,7 @@ export default function App() {
   }, [searchQuery]);
 
   const handleLaunchStudio = (tool, sessionData) => {
+    navRef.current = true;
     setModalSeed(null);
     setActiveModalTool(null);
     setActiveStudioSession({
@@ -126,6 +194,66 @@ export default function App() {
     window.history.back();
   };
 
+  // ---------- Templates pages (rendered inside the site shell) ----------
+  if (tplRoute) {
+    const currentTpl = tplData ? findTemplate(tplData, tplRoute.cat, tplRoute.slug) : null;
+
+    let tplContent;
+    if (!tplData) {
+      tplContent = (
+        <div className="min-h-[60vh] bg-slate-50 flex items-center justify-center text-slate-400 text-sm">
+          Loading templates…
+        </div>
+      );
+    } else if (tplRoute.view === 'editor' && currentTpl) {
+      tplContent = (
+        <TemplateEditor
+          tpl={currentTpl}
+          onBack={() => {
+            navRef.current = true;
+            setTplRoute({ view: 'detail', cat: tplRoute.cat, slug: tplRoute.slug });
+          }}
+        />
+      );
+    } else if (tplRoute.view === 'detail') {
+      tplContent = !currentTpl ? (
+        <div className="min-h-[60vh] bg-slate-50 flex flex-col items-center justify-center gap-3 text-slate-400">
+          <p className="text-sm font-bold text-slate-500">Template not found</p>
+          <button onClick={openTemplates} className="text-xs font-bold text-rose-500 hover:text-rose-600 cursor-pointer">
+            ← Browse all templates
+          </button>
+        </div>
+      ) : (
+        <TemplateDetail
+          tpl={currentTpl}
+          allTemplates={tplData.templates}
+          onUse={editTemplate}
+          onPreview={previewTemplate}
+          onBack={openTemplates}
+        />
+      );
+    } else {
+      tplContent = (
+        <TemplatesHub
+          key={tplRoute.cat || 'all'}
+          categorySlug={tplRoute.cat}
+          onPreview={previewTemplate}
+          onUse={editTemplate}
+        />
+      );
+    }
+
+    return (
+      <div className="min-h-screen bg-slate-50 text-slate-800 font-sans antialiased flex flex-col justify-between">
+        <div>
+          <Header onSelectTool={openTool} onHome={goHome} onTemplates={openTemplates} />
+          {tplContent}
+        </div>
+        <Footer onSelectTool={openTool} />
+      </div>
+    );
+  }
+
   // If a tool session is active, render the dedicated full-screen studio
   if (activeStudioSession) {
     return (
@@ -140,6 +268,7 @@ export default function App() {
         onSwitchTool={(toolId) => {
           const target = findToolById(toolId);
           if (!target) return;
+          navRef.current = true;
           setActiveStudioSession((prev) =>
             prev
               ? {
@@ -159,7 +288,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans antialiased flex flex-col justify-between">
       <div>
-        <Header onSelectTool={openTool} onHome={goHome} />
+        <Header onSelectTool={openTool} onHome={goHome} onTemplates={openTemplates} />
 
         {/* Hero Section */}
         <section className="py-14 px-4 sm:px-6 lg:px-8 max-w-5xl mx-auto text-center">
@@ -222,6 +351,33 @@ export default function App() {
           ))}
         </main>
 
+        {/* Popular Templates */}
+        {tplData && (
+          <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                Popular Templates
+              </h2>
+              <button
+                onClick={() => openTemplates()}
+                className="flex items-center gap-1.5 text-xs font-bold text-rose-500 hover:text-rose-600 cursor-pointer"
+              >
+                View All Templates <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+              {tplData.templates.filter((t) => t.featured).slice(0, 8).map((t) => (
+                <TemplateCard
+                  key={t.id}
+                  tpl={t}
+                  onPreview={() => previewTemplate(t)}
+                  onUse={() => editTemplate(t)}
+                />
+              ))}
+            </div>
+          </section>
+        )}
+
         <Reviews />
       </div>
 
@@ -232,6 +388,7 @@ export default function App() {
         <ToolModal
           tool={activeModalTool}
           onClose={() => {
+            navRef.current = true;
             setModalSeed(null);
             setActiveModalTool(null);
             restoreHomeScroll();

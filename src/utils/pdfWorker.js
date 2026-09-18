@@ -3103,7 +3103,7 @@ async function setPdfMetadataClient(file, meta) {
  * Replace characters that WinAnsi (pdf-lib standard fonts) cannot encode —
  * box-drawing chars, arrows, dingbats — with ASCII equivalents.
  */
-const sanitizeForWinAnsi = (s) =>
+export const sanitizeForWinAnsi = (s) =>
   s.replace(/[^\x00-\xFF]/g, (ch) => {
     const map = {
       '│': '|', '─': '-', '═': '=', '║': '|', '━': '-',

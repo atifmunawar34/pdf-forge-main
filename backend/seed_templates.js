@@ -42,7 +42,7 @@ const data = [
 
 // Every template gets a unique design combo: theme × accent × header variant.
 // Combos rotate per docType, so no two templates of the same kind look alike.
-const THEMES = ['modern', 'classic', 'bold', 'elegant'];
+const THEMES = ['modern', 'classic', 'bold', 'elegant', 'stripe', 'edge'];
 const ACCENT_POOL = [
   'rose', 'navy', 'teal', 'gold', 'emerald', 'slate', 'charcoal', 'blue',
   'violet', 'indigo', 'crimson', 'orange', 'sky', 'plum', 'olive',
@@ -52,8 +52,30 @@ const VARIANTS = {
   classic: ['center', 'left'],
   bold: ['band', 'block'],
   elegant: ['hairline', 'center'],
+  stripe: ['rail', 'panel'],
+  edge: ['hairline', 'split'],
 };
-const comboCounter = {};
+
+// All theme × variant × accent combos (13 pairs × 15 accents = 195),
+// interleaved with a coprime stride so consecutive templates get
+// maximally different designs (different theme AND accent each step).
+const COMBOS = [];
+for (const th of THEMES) for (const va of VARIANTS[th]) for (const ac of ACCENT_POOL) COMBOS.push([th, va, ac]);
+const SPREAD = [];
+{
+  const usedIdx = new Array(COMBOS.length).fill(false);
+  for (let i = 0, j = 0; i < COMBOS.length; i++) {
+    while (usedIdx[j]) j = (j + 1) % COMBOS.length;
+    SPREAD.push(COMBOS[j]);
+    usedIdx[j] = true;
+    j = (j + 67) % COMBOS.length; // 67 is coprime with 195
+  }
+}
+
+// Global uniqueness — no two templates share theme/variant/accent/layout.
+const taken = new Set();
+const comboKey = (theme, variant, accent, layout) => [theme || '-', variant || '-', accent, layout || '-'].join('/');
+let spreadIdx = 0;
 
 const seen = new Set();
 const templates = data.map((t, i) => {
@@ -63,10 +85,28 @@ const templates = data.map((t, i) => {
   if (!cat) throw new Error(`unknown category: ${t.category} (${t.slug})`);
   // fixed-layout CVs (sidebar/topband) manage their own design
   const fixed = t.docType === 'cv' && (t.layout === 'sidebar' || t.layout === 'topband');
-  const c = i; // global index — spreads combos across all docTypes too
-  const theme = t.theme || (fixed ? undefined : THEMES[c % THEMES.length]);
-  const variant = t.variant || (fixed ? undefined : VARIANTS[theme][c % VARIANTS[theme].length]);
-  const accent = t.accent || ACCENT_POOL[c % ACCENT_POOL.length];
+  let theme = t.theme, variant = t.variant, accent = t.accent;
+  if (fixed) {
+    if (!accent) {
+      // unique accent per layout
+      for (let k = 0; k < ACCENT_POOL.length * 2; k++) {
+        const cand = ACCENT_POOL[(i + k) % ACCENT_POOL.length];
+        if (!taken.has(comboKey(null, null, cand, t.layout))) { accent = cand; break; }
+      }
+    }
+  } else if (!theme || !variant || !accent) {
+    // next unused combo from the interleaved spread (honors explicit overrides)
+    for (let tries = 0; tries < SPREAD.length * 2; tries++) {
+      const [th, va, ac] = SPREAD[spreadIdx];
+      spreadIdx = (spreadIdx + 1) % SPREAD.length;
+      const cand = [theme || th, variant || va, accent || ac];
+      if (taken.has(comboKey(cand[0], cand[1], cand[2], t.layout))) continue;
+      [theme, variant, accent] = cand;
+      break;
+    }
+    if (!theme) { theme = 'modern'; variant = variant || 'band'; accent = accent || 'rose'; }
+  }
+  taken.add(comboKey(theme, variant, accent, t.layout));
   return {
     id: `tpl-${String(i + 1).padStart(3, '0')}`,
     slug: t.slug,

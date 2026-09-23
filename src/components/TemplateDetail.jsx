@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from 'react';
-import { PencilLine, Tag, ShieldAlert, ChevronRight } from 'lucide-react';
+import { PencilLine, ShieldAlert, ChevronRight } from 'lucide-react';
 import { sampleValues } from '../utils/templateValues';
 import { trackTemplate } from '../utils/templatesApi';
 import TemplateDoc from './TemplateDoc';
@@ -8,22 +8,66 @@ import TemplateCard from './TemplateCard';
 export default function TemplateDetail({ tpl, allTemplates, onUse, onPreview, onBack }) {
   const sample = useMemo(() => sampleValues(tpl), [tpl]);
 
-  // SEO: title + meta description for this template page
+  // SEO: title, meta description, canonical, OG + FAQ structured data
   useEffect(() => {
     const prevTitle = document.title;
-    document.title = tpl.seoTitle || `${tpl.name} Template — PDF Forge`;
-    let meta = document.querySelector('meta[name="description"]');
-    const prevDesc = meta?.getAttribute('content');
-    if (!meta) {
-      meta = document.createElement('meta');
-      meta.setAttribute('name', 'description');
-      document.head.appendChild(meta);
+    const title = tpl.seoTitle || `${tpl.name} Template — PDF Forge`;
+    const desc = tpl.seoDescription || tpl.description;
+    const url = `https://atifmunawar34.github.io/pdf-forge/templates/${tpl.category}/${tpl.slug}`;
+    document.title = title;
+
+    const setMeta = (sel, attr, content) => {
+      let el = document.querySelector(sel);
+      const prev = el?.getAttribute('content');
+      if (!el) {
+        el = document.createElement('meta');
+        if (sel.includes('name=')) el.setAttribute('name', sel.match(/name="([^"]+)"/)?.[1]);
+        else el.setAttribute('property', sel.match(/property="([^"]+)"/)?.[1]);
+        document.head.appendChild(el);
+      }
+      el.setAttribute('content', content);
+      return () => { if (prev != null) el.setAttribute('content', prev); };
+    };
+    const restores = [
+      setMeta('meta[name="description"]', 'content', desc),
+      setMeta('meta[property="og:title"]', 'content', title),
+      setMeta('meta[property="og:description"]', 'content', desc),
+      setMeta('meta[property="og:url"]', 'content', url),
+    ];
+
+    // canonical link for this template URL
+    let canon = document.querySelector('link[rel="canonical"]');
+    const prevCanon = canon?.getAttribute('href');
+    if (!canon) {
+      canon = document.createElement('link');
+      canon.setAttribute('rel', 'canonical');
+      document.head.appendChild(canon);
     }
-    meta.setAttribute('content', tpl.seoDescription || tpl.description);
+    canon.setAttribute('href', url);
+
+    // FAQPage structured data (rich results)
+    let faqScript = null;
+    if (tpl.faqs?.length) {
+      faqScript = document.createElement('script');
+      faqScript.type = 'application/ld+json';
+      faqScript.textContent = JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'FAQPage',
+        mainEntity: tpl.faqs.map((f) => ({
+          '@type': 'Question',
+          name: f.q,
+          acceptedAnswer: { '@type': 'Answer', text: f.a },
+        })),
+      });
+      document.head.appendChild(faqScript);
+    }
+
     trackTemplate(tpl.id, 'view');
     return () => {
       document.title = prevTitle;
-      if (prevDesc != null) meta.setAttribute('content', prevDesc);
+      restores.forEach((r) => r());
+      if (prevCanon != null) canon.setAttribute('href', prevCanon);
+      if (faqScript) faqScript.remove();
     };
   }, [tpl]);
 
@@ -60,14 +104,6 @@ export default function TemplateDetail({ tpl, allTemplates, onUse, onPreview, on
                 {tpl.name} — Free Template
               </h1>
               <p className="text-sm text-slate-500 mt-2 leading-relaxed">{tpl.description}</p>
-            </div>
-
-            <div className="flex flex-wrap gap-1.5">
-              {(tpl.tags || []).map((t) => (
-                <span key={t} className="flex items-center gap-1 text-[10px] font-bold text-slate-500 bg-white border border-slate-200 px-2.5 py-1 rounded-full">
-                  <Tag className="w-3 h-3" />{t}
-                </span>
-              ))}
             </div>
 
             <button

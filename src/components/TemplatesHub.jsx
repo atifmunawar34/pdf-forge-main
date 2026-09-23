@@ -1,9 +1,25 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Search, SlidersHorizontal, Flame, FileText, X } from 'lucide-react';
+import { Search, SlidersHorizontal, Flame, FileText, X, LayoutTemplate, Layers, Download } from 'lucide-react';
 import { fetchTemplates, usageScore } from '../utils/templatesApi';
 import TemplateCard from './TemplateCard';
 
 const PAGE_SIZE = 24;
+
+const GRID = 'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4';
+
+const SkeletonGrid = () => (
+  <div className={`mt-8 ${GRID}`}>
+    {Array.from({ length: 10 }).map((_, i) => (
+      <div key={i} className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
+        <div className="aspect-[3/4] bg-slate-100 animate-pulse" />
+        <div className="p-3.5 border-t border-slate-100 space-y-2">
+          <div className="h-2.5 w-2/3 bg-slate-100 rounded animate-pulse" />
+          <div className="h-2 w-1/3 bg-slate-100 rounded animate-pulse" />
+        </div>
+      </div>
+    ))}
+  </div>
+);
 
 const DOC_TYPES = [
   ['invoice', 'Invoices & Quotes'], ['letter', 'Letters'], ['cv', 'CV / Resume'],
@@ -42,6 +58,13 @@ export default function TemplatesHub({ categorySlug, onPreview, onUse }) {
     fetchTemplates().then(setData).catch((e) => setError(e.message));
   }, []);
 
+  // SEO: page title + description for the hub
+  useEffect(() => {
+    const prev = document.title;
+    document.title = 'Free Document Templates — Resumes, Invoices, Letters & Contracts | PDF Forge';
+    return () => { document.title = prev; };
+  }, []);
+
   // App remounts this component per category (key prop), so initial state is enough
   const pick = (setter) => (v) => { setter(v); setPage(1); };
 
@@ -69,6 +92,12 @@ export default function TemplatesHub({ categorySlug, onPreview, onUse }) {
     return [...data.templates].sort((a, b) => usageScore(b) - usageScore(a) || (b.featured - a.featured)).slice(0, 8);
   }, [data]);
 
+  const counts = useMemo(() => {
+    const m = {};
+    (data?.templates || []).forEach((t) => { m[t.category] = (m[t.category] || 0) + 1; });
+    return m;
+  }, [data]);
+
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const shown = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const searching = query.trim() || cat !== 'all' || docType !== 'all';
@@ -78,11 +107,22 @@ export default function TemplatesHub({ categorySlug, onPreview, onUse }) {
       {/* hero */}
       <section className="bg-gradient-to-b from-rose-50 to-slate-50 border-b border-slate-200 px-4 pt-12 pb-8 text-center">
         <h1 className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight">
-          Ready-to-Use Templates for <span className="text-rose-500">Work, Business & Life</span>
+          Free Document Templates — <span className="text-rose-500">Resumes, Invoices, Letters & Contracts</span>
         </h1>
         <p className="mt-2 text-sm text-slate-500 max-w-xl mx-auto">
-          Create professional documents faster with customizable templates — fill, preview, download as PDF.
+          Professional templates, each with its own design: resumes, invoices, cover letters, agreements, receipts, planners and business forms — fill online, preview, download as PDF free.
         </p>
+        <div className="mt-4 flex flex-wrap justify-center gap-2">
+          {[
+            [LayoutTemplate, `${data?.templates?.length || '175'}+ templates`],
+            [Layers, `${data?.categories?.length || 19} categories`],
+            [Download, 'Free PDF download'],
+          ].map(([Icon, label]) => (
+            <span key={label} className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-500 bg-white border border-slate-200 px-3 py-1.5 rounded-full shadow-sm">
+              <Icon className="w-3.5 h-3.5 text-rose-500" /> {label}
+            </span>
+          ))}
+        </div>
         <div className="mt-6 max-w-xl mx-auto relative">
           <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
@@ -136,9 +176,7 @@ export default function TemplatesHub({ categorySlug, onPreview, onUse }) {
           </div>
         )}
 
-        {!data && !error && (
-          <div className="mt-10 text-center text-slate-400 text-sm">Loading templates…</div>
-        )}
+        {!data && !error && <SkeletonGrid />}
 
         {/* popular row — only when not searching */}
         {data && !searching && (
@@ -147,7 +185,7 @@ export default function TemplatesHub({ categorySlug, onPreview, onUse }) {
               <Flame className="w-4 h-4 text-amber-500" />
               <h2 className="text-sm font-black text-slate-800">Popular Templates</h2>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+            <div className={GRID}>
               {popular.map((t) => (
                 <TemplateCard key={t.id} tpl={t} onPreview={() => onPreview(t)} onUse={() => onUse(t)} />
               ))}
@@ -155,28 +193,30 @@ export default function TemplatesHub({ categorySlug, onPreview, onUse }) {
           </section>
         )}
 
-        {/* category chips */}
+        {/* category chips — sticky, with counts */}
         {data && !searching && (
-          <div className="mt-8 flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
-            <button
-              onClick={() => pick(setCat)('all')}
-              className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer transition ${
-                cat === 'all' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:border-rose-300'
-              }`}
-            >
-              All
-            </button>
-            {data.categories.map((c) => (
+          <div className="sticky top-16 z-20 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 py-2.5 mt-6 bg-slate-50/90 backdrop-blur-md">
+            <div className="flex gap-1.5 overflow-x-auto pf-scroll-x">
               <button
-                key={c.slug}
-                onClick={() => pick(setCat)(c.slug)}
-                className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer transition ${
-                  cat === c.slug ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:border-rose-300'
+                onClick={() => pick(setCat)('all')}
+                className={`shrink-0 px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap cursor-pointer transition ${
+                  cat === 'all' ? 'bg-slate-900 text-white shadow-sm' : 'bg-white border border-slate-200 text-slate-600 hover:border-slate-300 hover:text-slate-900'
                 }`}
               >
-                {c.name}
+                All <span className={cat === 'all' ? 'text-slate-400' : 'text-slate-300'}>{data.templates.length}</span>
               </button>
-            ))}
+              {data.categories.map((c) => (
+                <button
+                  key={c.slug}
+                  onClick={() => pick(setCat)(c.slug)}
+                  className={`shrink-0 px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap cursor-pointer transition ${
+                    cat === c.slug ? 'bg-slate-900 text-white shadow-sm' : 'bg-white border border-slate-200 text-slate-600 hover:border-slate-300 hover:text-slate-900'
+                  }`}
+                >
+                  {c.name} <span className={cat === c.slug ? 'text-slate-400' : 'text-slate-300'}>{counts[c.slug] || 0}</span>
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
@@ -196,7 +236,7 @@ export default function TemplatesHub({ categorySlug, onPreview, onUse }) {
                 <p className="text-xs mt-1">Try a different search or clear the filters.</p>
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+              <div className={GRID}>
                 {shown.map((t) => (
                   <TemplateCard key={t.id} tpl={t} onPreview={() => onPreview(t)} onUse={() => onUse(t)} />
                 ))}

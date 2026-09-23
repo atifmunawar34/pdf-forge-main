@@ -1053,6 +1053,67 @@ app.post('/api/templates/:id/track', (req, res) => {
   res.json({ ok: true });
 });
 
+// AI proxy — OpenAI-compatible endpoint. Keys live ONLY on the server:
+//   set AI_API_KEY / AI_API_BASE / AI_MODEL in env (or .env) to enable.
+// Without a key the endpoint returns 503 {offline:true} so the frontend
+// can fall back to local behavior instead of erroring.
+app.post('/api/ai', async (req, res) => {
+  const key = process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
+  const base = process.env.AI_API_BASE || 'https://api.openai.com/v1';
+  const model = process.env.AI_MODEL || 'gpt-4o-mini';
+  if (!key) return res.status(503).json({ offline: true, error: 'AI provider not configured on this server.' });
+
+  const { prompt } = req.body || {};
+  if (!prompt || typeof prompt !== 'string' || prompt.length > 20000) {
+    return res.status(400).json({ error: 'Invalid prompt.' });
+  }
+  try {
+    const r = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 1200,
+        temperature: 0.5,
+      }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return res.status(r.status).json({ error: data.error?.message || 'AI provider error.' });
+    res.json({ result: data.choices?.[0]?.message?.content || '' });
+  } catch {
+    res.status(502).json({ error: 'AI provider unreachable.' });
+  }
+});
+
+// AI Assistant project inquiries — validated, stored to JSON (CRM-ready).
+const INQUIRIES_PATH = path.join(os.tmpdir(), 'pdf-forge-inquiries.json');
+app.post('/api/inquiries', async (req, res) => {
+  const { serviceId, service, answers } = req.body || {};
+  if (!serviceId || !Array.isArray(answers) || !answers.length) {
+    return res.status(400).json({ error: 'Invalid inquiry.' });
+  }
+  const clean = {
+    serviceId: String(serviceId).slice(0, 60),
+    service: String(service || '').slice(0, 120),
+    answers: answers.slice(0, 30).map((a) => String(a).slice(0, 500)),
+    createdAt: new Date().toISOString(),
+  };
+  try {
+    let list = [];
+    try { list = JSON.parse(await fs.readFile(INQUIRIES_PATH, 'utf8')); } catch { /* first inquiry */ }
+    list.push(clean);
+    await fs.writeFile(INQUIRIES_PATH, JSON.stringify(list, null, 2));
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'Could not store inquiry.' });
+  }
+});
+app.get('/api/inquiries', async (_req, res) => {
+  try { res.json(JSON.parse(await fs.readFile(INQUIRIES_PATH, 'utf8'))); }
+  catch { res.json([]); }
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Conversion server running on port ${PORT}`);

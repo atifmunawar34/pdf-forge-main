@@ -136,6 +136,19 @@ export class W {
       this.page.drawText(t, { x: this.x + 10, y: this.y - 9, size: 9.5, font: this.f.bold, color: rgb(1, 1, 1) });
       this.y -= 22;
       this.gap(4);
+    } else if (th === 'stripe') {
+      // accent square + dark caps + light rule
+      this.page.drawRectangle({ x: this.x, y: this.y - 9.5, width: 7, height: 7, color: this.accent });
+      this.page.drawText(san(str).toUpperCase(), { x: this.x + 13, y: this.y - 9, size: 9.5, font: this.f.bold, color: this.ink });
+      this.y -= 13;
+      this.rule(this.light, 0.6);
+      this.gap(5);
+    } else if (th === 'edge') {
+      // spaced small caps + accent hairline
+      this.page.drawText(san(str).toUpperCase().split('').join(' '), { x: this.x, y: this.y - 8, size: 8, font: this.f.bold, color: this.ink });
+      this.y -= 11;
+      this.rule(this.accent, 0.7);
+      this.gap(5);
     } else {
       this.text(str.toUpperCase(), { size: 10, font: this.f.bold, color: this.accent });
       this.rule(this.accent, 0.8);
@@ -190,9 +203,9 @@ export class W {
     this.ensure(40);
     const th = this.theme || 'modern';
     const hdrY = this.y;
-    const hdrFill = th === 'modern' ? this.accent : th === 'bold' ? this.ink : th === 'classic' ? rgb(0.93, 0.93, 0.95) : null;
+    const hdrFill = th === 'modern' || th === 'stripe' ? this.accent : th === 'bold' ? this.ink : th === 'classic' ? rgb(0.93, 0.93, 0.95) : null;
     if (hdrFill) this.page.drawRectangle({ x: this.x, y: hdrY - 15, width: this.w, height: 17, color: hdrFill });
-    const hdrColor = th === 'classic' || th === 'elegant' ? this.ink : rgb(1, 1, 1);
+    const hdrColor = th === 'classic' || th === 'elegant' || th === 'edge' ? this.ink : rgb(1, 1, 1);
     cols.forEach((c, i) => {
       this.page.drawText(san(c.label).toUpperCase(), { x: xs[i] + 4, y: hdrY - 11, size: 7, font: this.f.bold, color: hdrColor });
     });
@@ -200,7 +213,11 @@ export class W {
       this.page.drawLine({ start: { x: this.x, y: hdrY - 15 }, end: { x: this.x + this.w, y: hdrY - 15 }, thickness: 1, color: this.ink });
       this.page.drawLine({ start: { x: this.x, y: hdrY - 17 }, end: { x: this.x + this.w, y: hdrY - 17 }, thickness: 0.4, color: this.ink });
     }
-    this.y = hdrY - (th === 'elegant' ? 19 : 17);
+    if (th === 'edge') {
+      this.page.drawLine({ start: { x: this.x, y: hdrY - 15.5 }, end: { x: this.x + this.w, y: hdrY - 15.5 }, thickness: 1.6, color: this.ink });
+      this.page.drawLine({ start: { x: this.x, y: hdrY - 18 }, end: { x: this.x + this.w, y: hdrY - 18 }, thickness: 0.5, color: this.accent });
+    }
+    this.y = hdrY - (th === 'elegant' || th === 'edge' ? 20 : 17);
 
     let rowIdx = 0;
     for (const r of rows) {

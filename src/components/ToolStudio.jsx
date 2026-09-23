@@ -1,11 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
   ArrowRight,
   Download,
-  ArrowUp,
-  ArrowDown,
   Trash2,
   FileText,
   Loader2,
@@ -16,7 +14,6 @@ import {
   TrendingDown,
   RotateCcw,
   Image as ImageIcon,
-  Code,
   Info,
   SlidersHorizontal,
   Plus,
@@ -37,7 +34,6 @@ import {
   KeyRound,
   Wand2,
   AlertTriangle,
-  Crop as CropIcon,
   ChevronUp,
   ChevronDown,
   ZoomIn,
@@ -64,6 +60,9 @@ import {
 } from 'lucide-react';
 import PdfTextEditor from './PdfTextEditor';
 import JSZip from 'jszip';
+import { popupBus } from '../utils/popupBus';
+import { PDF_CATEGORIES } from '../data/pdfTools';
+import { RELATED_TOOLS } from '../data/popupConfig';
 import {
   mergePDFs,
   splitPDF,
@@ -104,6 +103,7 @@ import {
   summarizePdf,
   translatePdf,
   renderBlobPdfPreview,
+  renderBlobPdfPage,
   pdfToTxt,
   pdfToImageFormat,
   pdfToHtml,
@@ -138,6 +138,20 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   const [files, setFiles] = useState(initialFiles || []);
   const [errorSuggestion, setErrorSuggestion] = useState(null);
 
+  const [imageCards, setImageCards] = useState(initialImageCards || []);
+  const [htmlInputMode] = useState(initialHtmlMode || 'file');
+  const [rawHtmlCode] = useState(initialHtmlCode || '');
+
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [result, setResult] = useState(null);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [resultPreviewPages, setResultPreviewPages] = useState([]);
+  const [resultPreviewIndex, setResultPreviewIndex] = useState(0);
+  const [resultZoom, setResultZoom] = useState(1);
+  const [resultBoxH, setResultBoxH] = useState(560);
+  const [zipPreview, setZipPreview] = useState(null);
+  const [docxEditText, setDocxEditText] = useState(null);
+
   // Fresh state when jumping between tools (files intentionally carry over)
   const prevToolRef = useRef(tool?.id);
   useEffect(() => {
@@ -150,19 +164,6 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
     setResultPreviewIndex(0);
     setZipPreview(null);
   }, [tool?.id]);
-  const [imageCards, setImageCards] = useState(initialImageCards || []);
-  const [htmlInputMode, setHtmlInputMode] = useState(initialHtmlMode || 'file');
-  const [rawHtmlCode, setRawHtmlCode] = useState(initialHtmlCode || '');
-
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [result, setResult] = useState(null);
-  const [errorMsg, setErrorMsg] = useState('');
-  const [resultPreviewPages, setResultPreviewPages] = useState([]);
-  const [resultPreviewIndex, setResultPreviewIndex] = useState(0);
-  const [resultZoom, setResultZoom] = useState(1);
-  const [resultBoxH, setResultBoxH] = useState(560);
-  const [zipPreview, setZipPreview] = useState(null);
-  const [docxEditText, setDocxEditText] = useState(null);
   const resultBoxRef = useRef(null);
   const resultZoomRef = useRef(1);
 
@@ -216,6 +217,33 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   const [resultPreviewTotal, setResultPreviewTotal] = useState(0);
   const [isResultPreviewLoading, setIsResultPreviewLoading] = useState(false);
   const [resultPreviewText, setResultPreviewText] = useState('');
+  const [resultFileInfo, setResultFileInfo] = useState(null);
+  const [editedFileName, setEditedFileName] = useState(null);
+  const [editedResultMeta, setEditedResultMeta] = useState({});
+
+  // Zoom-aware re-render: past ~1.2×, re-render the visible page at zoom-proportional
+  // DPI so the preview stays sharp instead of stretching pixels (debounced).
+  const hiResCacheRef = useRef({});
+  useEffect(() => {
+    const blob = result?.blob;
+    const isPdf = blob && ((result.mime || blob.type || '').includes('pdf') || (result.filename || '').toLowerCase().endsWith('.pdf'));
+    if (!isPdf || !resultPreviewPages.length || resultZoom <= 1.15) return;
+    const pageNum = resultPreviewIndex + 1;
+    const timer = setTimeout(async () => {
+      const scale = Math.min(6.5, 2.2 * Math.min(window.devicePixelRatio || 1, 2) * resultZoom);
+      const key = `${pageNum}@${scale.toFixed(1)}`;
+      if (hiResCacheRef.current[key]) {
+        setResultPreviewPages((prev) => prev.map((p, i) => (i === resultPreviewIndex ? { ...p, dataUrl: hiResCacheRef.current[key] } : p)));
+        return;
+      }
+      try {
+        const dataUrl = await renderBlobPdfPage(blob, pageNum, scale);
+        hiResCacheRef.current = { [key]: dataUrl }; // keep cache small — current page only
+        setResultPreviewPages((prev) => prev.map((p, i) => (i === resultPreviewIndex ? { ...p, dataUrl } : p)));
+      } catch { /* keep lower-res frame */ }
+    }, 160);
+    return () => clearTimeout(timer);
+  }, [resultZoom, resultPreviewIndex, result]);
 
   const changeFileInputRef = useRef(null);
 
@@ -254,6 +282,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   const scanVideoRef = useRef(null);
   const signPadRef = useRef(null);
   const [cameraActive, setCameraActive] = useState(false);
+  const [scanPreviewIdx, setScanPreviewIdx] = useState(0);
   const [signDataUrl, setSignDataUrl] = useState('');
   const [signTypedName, setSignTypedName] = useState('');
   const [signApplyAll, setSignApplyAll] = useState(false);
@@ -419,7 +448,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
 
   // Edit PDF Tool State
   const [isEditingPdf, setIsEditingPdf] = useState(false);
-  const [editedPdfBlob, setEditedPdfBlob] = useState(null);
+  const [, setEditedPdfBlob] = useState(null);
 
   const updateCurrentPageCropBox = (updater) => {
     setPageCropBoxes((prev) => {
@@ -549,22 +578,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
     return () => observer.disconnect();
   }, []);
 
-  useEffect(() => {
-    if (tool?.id === 'forms' && files.length > 0) {
-      loadInitialPdfForms(files[0]);
-    }
-  }, [files, tool?.id]);
-
-  useEffect(() => {
-    if (tool?.id === 'forms' && files.length > 0) {
-      renderCurrentFormPage(files[0], formCurrentPage);
-      if (formViewportScrollRef.current) {
-        formViewportScrollRef.current.scrollTo({ top: 0, left: 0, behavior: 'instant' });
-      }
-    }
-  }, [files, tool?.id, formCurrentPage]);
-
-  const loadInitialPdfForms = async (file) => {
+  async function loadInitialPdfForms(file) {
     setIsFormLoading(true);
     setErrorMsg('');
     try {
@@ -576,20 +590,50 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
     } finally {
       setIsFormLoading(false);
     }
-  };
+  }
 
-  const renderCurrentFormPage = async (file, pageNum) => {
+  async function renderCurrentFormPage(file, pageNum) {
     try {
-      const data = await renderSinglePdfPage(file, pageNum, 1.8, true);
+      const data = await renderSinglePdfPage(file, pageNum, 2.4, true);
       setFormPageDataUrl(data.dataUrl);
       setFormTotalPages(data.totalPages);
       if (data.width && data.height) {
         setFormPageDimensions({ width: data.width, height: data.height });
       }
-    } catch (err) {
+    } catch {
       setErrorMsg('Failed to render form page preview.');
     }
-  };
+  }
+
+  useEffect(() => {
+    if (tool?.id === 'forms' && files.length > 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      loadInitialPdfForms(files[0]);
+    }
+  }, [files, tool?.id]);
+
+  useEffect(() => {
+    if (tool?.id === 'forms' && files.length > 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      renderCurrentFormPage(files[0], formCurrentPage);
+      if (formViewportScrollRef.current) {
+        formViewportScrollRef.current.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+      }
+    }
+  }, [files, tool?.id, formCurrentPage]);
+
+  // Form preview zoom: re-render at zoom-proportional DPI so it stays sharp
+  useEffect(() => {
+    if (tool?.id !== 'forms' || !files[0] || formZoom <= 115) return;
+    const timer = setTimeout(async () => {
+      try {
+        const scale = Math.min(7, 2.4 * (formZoom / 100));
+        const data = await renderSinglePdfPage(files[0], formCurrentPage, scale, true);
+        setFormPageDataUrl(data.dataUrl);
+      } catch { /* keep lower-res frame */ }
+    }, 160);
+    return () => clearTimeout(timer);
+  }, [formZoom, formCurrentPage]);
 
   const selectedField = formFields.find((f) => f.id === selectedFieldId);
 
@@ -771,45 +815,6 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   const isPdfSourceConversion = ['pdf-to-word', 'pdf-to-powerpoint', 'pdf-to-excel', 'pdf-to-jpg', 'to-markdown', 'repair', 'pdf-to-pdfa', 'summarizer', 'translate', 'pdf-to-png', 'pdf-to-webp', 'pdf-to-txt', 'pdf-to-html', 'extract-images', 'extract-attachments', 'remove-metadata', 'metadata', 'page-info', 'flatten', 'grayscale', 'reverse', 'insert-blank', 'split'].includes(tool?.id);
 
   useEffect(() => {
-    if (isPageLevelTool && files.length > 0) {
-      if (tool?.id === 'crop') {
-        loadCropPagePreview(files[0], cropCurrentPage);
-      } else if (tool?.id === 'sign') {
-        loadCropPagePreview(files[0], signPage);
-        loadDocumentThumbnails(files[0]);
-      } else if (tool?.id === 'redact') {
-        loadCropPagePreview(files[0], redactPage);
-        loadDocumentThumbnails(files[0]);
-      } else {
-        loadDocumentThumbnails(files[0]);
-      }
-    } else if (tool?.id === 'merge' && files.length > 0) {
-      loadMergePreviews(files);
-    } else if (
-      isPdfSourceConversion &&
-      files.length > 0 &&
-      (files[0]?.type === 'application/pdf' || files[0]?.name?.toLowerCase().endsWith('.pdf'))
-    ) {
-      loadConversionPreview(files[0]);
-    }
-
-    if ((tool?.id === 'metadata' || tool?.id === 'page-info') && files[0]) {
-      getPdfInfo(files[0])
-        .then((info) => {
-          setPdfInfo(info);
-          setMetadataFields({
-            title: info.title || '',
-            author: info.author || '',
-            subject: info.subject || '',
-            keywords: info.keywords || '',
-            creator: info.creator || '',
-          });
-        })
-        .catch(() => setPdfInfo(null));
-    }
-  }, [files, tool?.id, cropCurrentPage, signPage, redactPage]);
-
-  useEffect(() => {
     let cancelled = false;
 
     const resetPreview = () => {
@@ -817,6 +822,9 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
       setResultPreviewIndex(0);
       setResultPreviewTotal(0);
       setResultPreviewText('');
+      setResultFileInfo(null);
+      setEditedFileName(null);
+      setEditedResultMeta({});
       setIsResultPreviewLoading(false);
       setDocxEditText(null);
       setZipPreview((prev) => {
@@ -848,6 +856,9 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
         } finally {
           if (!cancelled) setIsResultPreviewLoading(false);
         }
+        getPdfInfo(result.blob)
+          .then((info) => { if (!cancelled) setResultFileInfo(info); })
+          .catch(() => {});
         return;
       }
 
@@ -918,26 +929,26 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
     };
   }, [result]);
 
-  const loadCropPagePreview = async (file, pageNum) => {
+  async function loadCropPagePreview(file, pageNum) {
     setErrorMsg('');
     setIsRenderingPages(true);
     try {
-      const data = await renderSinglePdfPage(file, pageNum, 1.6);
+      const data = await renderSinglePdfPage(file, pageNum, 2.4);
       setCropPageDataUrl(data.dataUrl);
       setTotalPages(data.totalPages);
-    } catch (err) {
+    } catch {
       setErrorMsg('Failed to render PDF page. The document may be corrupted.');
     } finally {
       setIsRenderingPages(false);
     }
-  };
+  }
 
-  const loadConversionPreview = async (file) => {
+  async function loadConversionPreview(file) {
     setErrorMsg('');
     setIsRenderingPages(true);
     setThumbnails([]);
     try {
-      const data = await renderSinglePdfPage(file, 1, 0.9);
+      const data = await renderSinglePdfPage(file, 1, 2.4);
       setThumbnails([
         {
           id: `preview-${Date.now()}`,
@@ -953,9 +964,9 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
     } finally {
       setIsRenderingPages(false);
     }
-  };
+  }
 
-  const loadDocumentThumbnails = async (file) => {
+  async function loadDocumentThumbnails(file) {
     setErrorMsg('');
     setIsRenderingPages(true);
     setThumbnails([]);
@@ -976,14 +987,14 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
         fromPage: 1,
         toPage: data.totalPages
       }));
-    } catch (err) {
+    } catch {
       setErrorMsg('Failed to read PDF pages. The file might be corrupted.');
     } finally {
       setIsRenderingPages(false);
     }
-  };
+  }
 
-  const loadMergePreviews = async (pdfFiles) => {
+  async function loadMergePreviews(pdfFiles) {
     setIsLoadingMergePreviews(true);
     try {
       const cards = await Promise.all(
@@ -1012,7 +1023,48 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
     } finally {
       setIsLoadingMergePreviews(false);
     }
-  };
+  }
+
+  useEffect(() => {
+    if (isPageLevelTool && files.length > 0) {
+      if (tool?.id === 'crop') {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        loadCropPagePreview(files[0], cropCurrentPage);
+      } else if (tool?.id === 'sign') {
+        loadCropPagePreview(files[0], signPage);
+        loadDocumentThumbnails(files[0]);
+      } else if (tool?.id === 'redact') {
+        loadCropPagePreview(files[0], redactPage);
+        loadDocumentThumbnails(files[0]);
+      } else {
+        loadDocumentThumbnails(files[0]);
+      }
+    } else if (tool?.id === 'merge' && files.length > 0) {
+      loadMergePreviews(files);
+    } else if (
+      isPdfSourceConversion &&
+      files.length > 0 &&
+      (files[0]?.type === 'application/pdf' || files[0]?.name?.toLowerCase().endsWith('.pdf'))
+    ) {
+      loadConversionPreview(files[0]);
+    }
+
+    if ((tool?.id === 'metadata' || tool?.id === 'page-info') && files[0]) {
+      getPdfInfo(files[0])
+        .then((info) => {
+          setPdfInfo(info);
+          setMetadataFields({
+            title: info.title || '',
+            author: info.author || '',
+            subject: info.subject || '',
+            keywords: info.keywords || '',
+            creator: info.creator || '',
+          });
+        })
+        .catch(() => setPdfInfo(null));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [files, tool?.id, cropCurrentPage, signPage, redactPage]);
 
   const handleReplaceDocument = async (e) => {
     const file = e.target.files?.[0];
@@ -1122,6 +1174,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
         { id: `img-${Date.now()}-${Math.random()}`, file, previewUrl: URL.createObjectURL(file), rotation: 0 },
       ]);
       setFiles((prev) => [...prev, file]);
+      setScanPreviewIdx(imageCards.length); // jump the big preview to the fresh page
     }, 'image/jpeg', 0.92);
   };
 
@@ -1221,21 +1274,53 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   };
 
   // Download — for docx results with edits, rebuild the document first
+  // Effective download name — user may rename the file in the result panel;
+  // the original extension is always preserved.
+  const getResultDownloadName = () => {
+    if (!result?.filename) return 'file';
+    const ext = result.filename.includes('.') ? `.${result.filename.split('.').pop()}` : '';
+    const typed = (editedFileName || '').trim();
+    const base = (typed ? typed.replace(/\.[^/.]+$/, '') : result.filename.replace(/\.[^/.]+$/, '')) || 'file';
+    return `${base}${ext}`;
+  };
+
+  const isResultPdf = () =>
+    (result?.mime || result?.blob?.type || '').includes('pdf') || /\.pdf$/i.test(result?.filename || '');
+
+  const resultMetaChanged = () =>
+    isResultPdf() &&
+    ((editedResultMeta.title ?? resultFileInfo?.title ?? '') !== (resultFileInfo?.title ?? '') ||
+      (editedResultMeta.author ?? resultFileInfo?.author ?? '') !== (resultFileInfo?.author ?? ''));
+
   const handleDownloadResult = async (e) => {
     setResultZoom(1);
-    if (docxEditText === null) return; // normal blob download
+    const finalName = getResultDownloadName();
+    if (docxEditText === null && !resultMetaChanged()) return; // normal blob download (anchor handles rename via `download`)
     e.preventDefault();
     setIsProcessing(true);
     try {
-      const blob = await buildDocxFromText(docxEditText, result.filename);
+      let blob;
+      if (docxEditText !== null) {
+        blob = await buildDocxFromText(docxEditText, finalName);
+      } else {
+        const meta = {
+          title: editedResultMeta.title ?? resultFileInfo?.title ?? '',
+          author: editedResultMeta.author ?? resultFileInfo?.author ?? '',
+          subject: resultFileInfo?.subject ?? '',
+          keywords: resultFileInfo?.keywords ?? '',
+          creator: resultFileInfo?.creator ?? '',
+        };
+        const file = new File([result.blob], result.filename, { type: 'application/pdf' });
+        blob = (await setPdfMetadata(file, meta)).blob;
+      }
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = result.filename;
+      a.download = finalName;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      setErrorMsg(err.message || 'Failed to build the edited document.');
+      setErrorMsg(err.message || 'Failed to apply changes to the document.');
     } finally {
       setIsProcessing(false);
     }
@@ -1283,6 +1368,18 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   };
 
   useEffect(() => () => stopScanCamera(), []);
+
+  // Keep the scanner's big preview in range when pages are deleted (clamped at render),
+  // and auto-open the camera when the scanner starts empty.
+  const scanAutoOpenedRef = useRef(false);
+  const scanIdx = Math.min(scanPreviewIdx, Math.max(0, imageCards.length - 1));
+  useEffect(() => {
+    if (tool?.id === 'scan' && !scanAutoOpenedRef.current && imageCards.length === 0) {
+      scanAutoOpenedRef.current = true;
+      startScanCamera();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Load custom TTF fonts into the browser so the preview matches the PDF
   useEffect(() => {
@@ -1419,7 +1516,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
       }
       setWmPreviewLoading(true);
       try {
-        const r = await renderSinglePdfPage(files[0], page, 1.3);
+        const r = await renderSinglePdfPage(files[0], page, 2.4);
         wmPreviewCache.current[page] = r;
         if (!cancelled) setWmPreview(r);
       } catch (err) {
@@ -1863,9 +1960,37 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
         previewText: output.previewText || ''
       });
       window.scrollTo({ top: 0, behavior: 'smooth' });
+      // Success popup: download + related tools (once per result)
+      const relatedIds = RELATED_TOOLS[tool?.id] || RELATED_TOOLS.default;
+      const relatedTools = PDF_CATEGORIES.flatMap((c) => c.tools).filter((t) => relatedIds.includes(t.id)).slice(0, 4);
+      popupBus.show({
+        type: 'success',
+        title: 'Your file is ready!',
+        description: `${tool?.name || 'File'} processed successfully.`,
+        fileName: output.filename,
+        fileType: output.blob.type || 'PDF',
+        fileSize: output.compressedSize || output.blob.size,
+        downloadLabel: 'Download',
+        onDownload: () => {
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = output.filename;
+          a.click();
+        },
+        anotherLabel: 'Keep Editing',
+        related: relatedTools,
+        onSelectTool: (t) => popupBus.actions.openTool?.(t),
+      });
     } catch (err) {
       const msg = err.message || 'An error occurred during processing.';
       setErrorMsg(msg);
+      popupBus.show({
+        type: 'error',
+        title: 'Processing failed',
+        description: msg,
+        onRetry: () => executeAction(),
+        anotherLabel: 'Close',
+      });
       // Offer a direct jump to the right tool when the error tells us one exists
       if (/no embedded images/i.test(msg)) {
         setErrorSuggestion({ toolId: 'pdf-to-png', label: 'PDF to PNG' });
@@ -3309,8 +3434,265 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
               </div>
             )}
 
+            {/* 3a. Document Scanner — camera capture, full-page preview, page manager */}
+            {tool?.id === 'scan' && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Stage: live camera OR full-page document preview */}
+                <div className="lg:col-span-7 xl:col-span-8 bg-white border border-slate-200 rounded-3xl shadow-sm overflow-hidden flex flex-col">
+                  <div className="flex items-center justify-between gap-3 px-5 py-3.5 border-b border-slate-100">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Camera className="w-4 h-4 text-rose-500 shrink-0" />
+                      <h3 className="font-bold text-sm text-slate-900 truncate">Document Scanner</h3>
+                      <span className="text-[11px] font-semibold text-slate-400 shrink-0">
+                        {imageCards.length} {imageCards.length === 1 ? 'page' : 'pages'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={cameraActive ? stopScanCamera : startScanCamera}
+                        className={`px-3 py-1.5 font-bold rounded-xl text-xs cursor-pointer flex items-center gap-1 transition border ${
+                          cameraActive
+                            ? 'bg-red-50 hover:bg-red-100 border-red-200 text-red-700'
+                            : 'bg-slate-900 hover:bg-slate-800 border-slate-900 text-white'
+                        }`}
+                      >
+                        <Camera className="w-3.5 h-3.5" />
+                        <span>{cameraActive ? 'Close Camera' : 'Open Camera'}</span>
+                      </button>
+                      <label htmlFor="studioAddImagesInput" className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-bold rounded-xl text-xs cursor-pointer flex items-center gap-1">
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add from Device</span>
+                        <input
+                          type="file"
+                          id="studioAddImagesInput"
+                          multiple
+                          accept="image/jpeg,image/png,image/webp"
+                          className="hidden"
+                          onChange={handleAddMoreImages}
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className={`relative flex-1 min-h-[420px] sm:min-h-[520px] flex items-center justify-center ${cameraActive ? 'bg-slate-950' : 'bg-slate-100'}`}>
+                    {cameraActive ? (
+                      <>
+                        <video ref={scanVideoRef} autoPlay playsInline className="absolute inset-0 w-full h-full object-contain" />
+                        {/* document frame guides */}
+                        <div className="pointer-events-none absolute inset-6 sm:inset-10">
+                          <span className="absolute top-0 left-0 w-10 h-10 border-t-4 border-l-4 border-emerald-400/90 rounded-tl-2xl" />
+                          <span className="absolute top-0 right-0 w-10 h-10 border-t-4 border-r-4 border-emerald-400/90 rounded-tr-2xl" />
+                          <span className="absolute bottom-0 left-0 w-10 h-10 border-b-4 border-l-4 border-emerald-400/90 rounded-bl-2xl" />
+                          <span className="absolute bottom-0 right-0 w-10 h-10 border-b-4 border-r-4 border-emerald-400/90 rounded-br-2xl" />
+                        </div>
+                        <p className="absolute top-4 left-1/2 -translate-x-1/2 text-[11px] font-semibold text-white/85 bg-slate-900/60 px-3 py-1.5 rounded-full backdrop-blur-sm">
+                          Align the document inside the frame, then capture
+                        </p>
+                        <div className="absolute bottom-5 inset-x-0 flex justify-center">
+                          <button
+                            type="button"
+                            onClick={captureScanPage}
+                            aria-label="Capture page"
+                            title="Capture page"
+                            className="pf-press w-16 h-16 rounded-full bg-white shadow-xl ring-4 ring-white/25 flex items-center justify-center cursor-pointer hover:ring-white/40 transition"
+                          >
+                            <span className="w-11 h-11 rounded-full border-[2.5px] border-slate-900" />
+                          </button>
+                        </div>
+                      </>
+                    ) : imageCards.length > 0 ? (
+                      <>
+                        {/* full-page document preview */}
+                        <div className="absolute inset-0 flex items-center justify-center p-6 sm:p-10">
+                          <img
+                            src={imageCards[scanIdx]?.previewUrl}
+                            alt={`Page ${scanIdx + 1}`}
+                            style={{ transform: `rotate(${imageCards[scanIdx]?.rotation || 0}deg)` }}
+                            className="max-h-full max-w-full object-contain bg-white shadow-2xl rounded-md"
+                          />
+                        </div>
+                        <div className="absolute bottom-4 inset-x-0 flex justify-center">
+                          <div className="flex items-center gap-1 bg-slate-900/85 backdrop-blur-sm text-white rounded-full px-1.5 py-1.5 shadow-xl">
+                            <button
+                              type="button"
+                              onClick={() => setScanPreviewIdx((i) => Math.max(0, i - 1))}
+                              disabled={scanIdx <= 0}
+                              className="p-2 rounded-full hover:bg-white/10 disabled:opacity-30 cursor-pointer transition"
+                              title="Previous page"
+                            >
+                              <ArrowLeft className="w-4 h-4" />
+                            </button>
+                            <span className="text-[11px] font-bold px-2 min-w-16 text-center">
+                              Page {scanIdx + 1} of {imageCards.length}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setScanPreviewIdx((i) => Math.min(imageCards.length - 1, i + 1))}
+                              disabled={scanIdx >= imageCards.length - 1}
+                              className="p-2 rounded-full hover:bg-white/10 disabled:opacity-30 cursor-pointer transition"
+                              title="Next page"
+                            >
+                              <ArrowRight className="w-4 h-4" />
+                            </button>
+                            <span className="w-px h-4 bg-white/20 mx-0.5" />
+                            <button
+                              type="button"
+                              onClick={() => rotateImageCard(scanIdx)}
+                              className="p-2 rounded-full hover:bg-white/10 cursor-pointer transition"
+                              title="Rotate 90°"
+                            >
+                              <RotateCw className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteImageCard(scanIdx)}
+                              className="p-2 rounded-full hover:bg-red-500/30 text-red-300 cursor-pointer transition"
+                              title="Delete page"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-center px-6">
+                        <div className="w-16 h-16 mx-auto rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-center">
+                          <Camera className="w-7 h-7 text-slate-400" />
+                        </div>
+                        <p className="mt-4 text-sm font-bold text-slate-700">No pages scanned yet</p>
+                        <p className="mt-1 text-xs text-slate-400 max-w-xs mx-auto">
+                          Use your camera to scan pages, or upload existing photos — everything stays on your device.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Pages list + page setup + download */}
+                <div className="lg:col-span-5 xl:col-span-4 space-y-4">
+                  <div className="bg-white border border-slate-200 rounded-3xl p-4 shadow-sm">
+                    <h4 className="font-bold text-sm text-slate-900 mb-3">Scanned Pages</h4>
+                    {imageCards.length === 0 ? (
+                      <p className="text-xs text-slate-400 py-6 text-center">Captured pages will appear here. Drag to reorder.</p>
+                    ) : (
+                      <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                        {imageCards.map((card, idx) => (
+                          <div
+                            key={card.id}
+                            draggable
+                            onDragStart={(e) => handleImageDragStart(e, idx)}
+                            onDragOver={handleImageDragOver}
+                            onDrop={(e) => handleImageDrop(e, idx)}
+                            onClick={() => setScanPreviewIdx(idx)}
+                            className={`flex items-center gap-3 p-2 rounded-xl border cursor-pointer transition ${
+                              idx === scanIdx
+                                ? 'border-rose-400 bg-rose-50/60 ring-2 ring-rose-500/15'
+                                : 'border-slate-200 hover:border-slate-300 bg-white'
+                            } ${draggedImageIndex === idx ? 'opacity-40' : ''}`}
+                          >
+                            <img
+                              src={card.previewUrl}
+                              alt=""
+                              style={{ transform: `rotate(${card.rotation}deg)` }}
+                              className="w-11 h-14 object-cover rounded-md bg-slate-100 border border-slate-200 shrink-0"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-bold text-slate-700">Page {idx + 1}</p>
+                              <p className="text-[10px] text-slate-400 truncate">{card.file.name}</p>
+                            </div>
+                            <GripVertical className="w-3.5 h-3.5 text-slate-300 shrink-0" />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm space-y-4 text-xs">
+                    <h4 className="font-bold text-sm text-slate-900 border-b border-slate-100 pb-3">Page setup</h4>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setImageToPdfOptions({ ...imageToPdfOptions, orientation: 'portrait' })}
+                        className={`p-3 rounded-2xl border text-center flex flex-col items-center justify-center space-y-1.5 transition cursor-pointer ${
+                          imageToPdfOptions.orientation === 'portrait'
+                            ? 'border-rose-500 bg-rose-50/50 text-rose-700 font-bold ring-2 ring-rose-500/20'
+                            : 'border-slate-200 bg-white text-slate-600'
+                        }`}
+                      >
+                        <RectangleVertical className="w-5 h-5 text-rose-600" />
+                        <span>Portrait</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setImageToPdfOptions({ ...imageToPdfOptions, orientation: 'landscape' })}
+                        className={`p-3 rounded-2xl border text-center flex flex-col items-center justify-center space-y-1.5 transition cursor-pointer ${
+                          imageToPdfOptions.orientation === 'landscape'
+                            ? 'border-rose-500 bg-rose-50/50 text-rose-700 font-bold ring-2 ring-rose-500/20'
+                            : 'border-slate-200 bg-white text-slate-600'
+                        }`}
+                      >
+                        <RectangleHorizontal className="w-5 h-5 text-rose-600" />
+                        <span>Landscape</span>
+                      </button>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="font-semibold text-slate-700 block">Page size</label>
+                      <select
+                        value={imageToPdfOptions.pageSize}
+                        onChange={(e) => setImageToPdfOptions({ ...imageToPdfOptions, pageSize: e.target.value })}
+                        className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:outline-none"
+                      >
+                        <option value="a4">A4 (297×210 mm)</option>
+                        <option value="fit">Fit (same page size as image)</option>
+                        <option value="letter">US Letter (215.9×279.4 mm)</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="font-semibold text-slate-700 block">Margin</label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {[['none', Square, 'None'], ['small', SlidersHorizontal, 'Small'], ['big', Maximize2, 'Big']].map(([val, Icon, label]) => (
+                          <button
+                            key={val}
+                            type="button"
+                            onClick={() => setImageToPdfOptions({ ...imageToPdfOptions, margin: val })}
+                            className={`p-2.5 rounded-xl border text-center flex flex-col items-center justify-center space-y-1 transition cursor-pointer ${
+                              imageToPdfOptions.margin === val
+                                ? 'border-rose-500 bg-rose-50 text-rose-700 font-bold ring-2 ring-rose-500/20'
+                                : 'border-slate-200 bg-white text-slate-600'
+                            }`}
+                          >
+                            <Icon className="w-4 h-4 text-rose-600" />
+                            <span className="text-[11px]">{label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={executeAction}
+                    disabled={isProcessing || imageCards.length === 0}
+                    className="w-full py-4 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold rounded-2xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    {isProcessing ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <>
+                        <Download className="w-4 h-4" />
+                        <span>Download Scanned PDF</span>
+                      </>
+                    )}
+                  </button>
+                  <p className="text-[11px] text-slate-400 text-center">
+                    No watermark — all pages merge into one PDF, processed locally in your browser.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* 3. Image to PDF Studio */}
-            {(tool?.id === 'jpg-to-pdf' || tool?.id === 'scan') && (
+            {tool?.id === 'jpg-to-pdf' && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                 <div className="lg:col-span-8 bg-white border border-slate-200 rounded-3xl p-6 shadow-sm space-y-4">
                   <div className="flex items-center justify-between pb-4 border-b border-slate-100 text-xs font-semibold">
@@ -5077,7 +5459,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100 text-xs">
                   <div>
                     <span className="font-bold text-slate-800 text-sm">
-                      PDF Documents to Merge ({files.length})
+                      PDF Documents to Merge ({files.length} · {formatFileSize(files.reduce((sum, f) => sum + (f.size || 0), 0))})
                     </span>
                     <p className="text-slate-400 mt-0.5">Drag & drop cards to reorder merge sequence. Output will follow left-to-right order.</p>
                   </div>
@@ -5133,14 +5515,19 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                           </button>
                         </div>
 
-                        <div className="px-2 py-1.5 bg-white border-t border-slate-100 flex items-center justify-between text-[11px] font-semibold text-slate-600 mt-1 rounded-b-xl">
-                          <div className="flex items-center space-x-1 truncate max-w-[90px]">
-                            <GripVertical className="w-3 h-3 text-slate-400 shrink-0" />
-                            <span className="truncate">{card.file.name}</span>
+                        <div className="px-2 py-1.5 bg-white border-t border-slate-100 mt-1 rounded-b-xl">
+                          <div className="flex items-center justify-between text-[11px] font-semibold text-slate-600">
+                            <div className="flex items-center space-x-1 truncate max-w-[90px]">
+                              <GripVertical className="w-3 h-3 text-slate-400 shrink-0" />
+                              <span className="truncate">{card.file.name}</span>
+                            </div>
+                            <span className="text-[10px] text-rose-600 font-bold bg-rose-50 px-1.5 py-0.5 rounded">
+                              {idx + 1} ({card.pageCount}p)
+                            </span>
                           </div>
-                          <span className="text-[10px] text-rose-600 font-bold bg-rose-50 px-1.5 py-0.5 rounded">
-                            {idx + 1} ({card.pageCount}p)
-                          </span>
+                          <p className="text-[10px] text-slate-400 font-medium mt-0.5 pl-4">
+                            {formatFileSize(card.file.size)}
+                          </p>
                         </div>
                       </div>
                     ))}
@@ -5339,9 +5726,94 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
               )}
             </div>
 
-            <p className="text-xs text-slate-500 truncate px-4">
-              Generated file: <strong className="text-slate-800">{result.filename}</strong>
-            </p>
+            {/* Output file details — always shown before download */}
+            <div className="rounded-2xl border border-slate-200 bg-white text-left overflow-hidden shadow-xs">
+              <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-100 flex items-center gap-2">
+                <Info className="w-3.5 h-3.5 text-slate-500" />
+                <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">File Details</span>
+              </div>
+              <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3 px-4 py-3.5 text-xs">
+                <div className="col-span-2 sm:col-span-3 min-w-0">
+                  <dt className="text-[10px] font-bold text-slate-400 uppercase">File name <span className="normal-case font-medium">(editable — extension kept)</span></dt>
+                  <dd>
+                    <input
+                      type="text"
+                      value={editedFileName ?? result.filename}
+                      onChange={(e) => setEditedFileName(e.target.value)}
+                      className="w-full mt-0.5 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-semibold text-slate-800 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/15 transition"
+                    />
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[10px] font-bold text-slate-400 uppercase">Size</dt>
+                  <dd className="font-semibold text-slate-800">{formatFileSize(result.blob?.size)}</dd>
+                </div>
+                <div>
+                  <dt className="text-[10px] font-bold text-slate-400 uppercase">Format</dt>
+                  <dd className="font-semibold text-slate-800 uppercase">
+                    {(result.filename || '').split('.').pop() || result.mime || '—'}
+                  </dd>
+                </div>
+                {resultFileInfo?.pageCount != null && (
+                  <div>
+                    <dt className="text-[10px] font-bold text-slate-400 uppercase">Pages</dt>
+                    <dd className="font-semibold text-slate-800">{resultFileInfo.pageCount}</dd>
+                  </div>
+                )}
+                {resultFileInfo?.pageSize && (
+                  <div>
+                    <dt className="text-[10px] font-bold text-slate-400 uppercase">Page size</dt>
+                    <dd className="font-semibold text-slate-800">{resultFileInfo.pageSize}</dd>
+                  </div>
+                )}
+                {resultFileInfo && (
+                  <>
+                    <div className="min-w-0">
+                      <dt className="text-[10px] font-bold text-slate-400 uppercase">Title <span className="normal-case font-medium">(editable)</span></dt>
+                      <dd>
+                        <input
+                          type="text"
+                          value={editedResultMeta.title ?? resultFileInfo.title ?? ''}
+                          onChange={(e) => setEditedResultMeta((p) => ({ ...p, title: e.target.value }))}
+                          placeholder="—"
+                          className="w-full mt-0.5 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-semibold text-slate-800 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/15 transition"
+                        />
+                      </dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="text-[10px] font-bold text-slate-400 uppercase">Author <span className="normal-case font-medium">(editable)</span></dt>
+                      <dd>
+                        <input
+                          type="text"
+                          value={editedResultMeta.author ?? resultFileInfo.author ?? ''}
+                          onChange={(e) => setEditedResultMeta((p) => ({ ...p, author: e.target.value }))}
+                          placeholder="—"
+                          className="w-full mt-0.5 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-semibold text-slate-800 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/15 transition"
+                        />
+                      </dd>
+                    </div>
+                  </>
+                )}
+                {[
+                  ['Producer', resultFileInfo?.producer],
+                  ['Created', resultFileInfo?.creationDate],
+                ].filter(([, v]) => v).map(([label, v]) => (
+                  <div key={label} className="min-w-0">
+                    <dt className="text-[10px] font-bold text-slate-400 uppercase">{label}</dt>
+                    <dd className="font-semibold text-slate-800 truncate" title={v}>{v}</dd>
+                  </div>
+                ))}
+                {tool?.id === 'compress' && result.originalSize > 0 && result.compressedSize > 0 && (
+                  <div>
+                    <dt className="text-[10px] font-bold text-slate-400 uppercase">Space saved</dt>
+                    <dd className="font-semibold text-emerald-700">
+                      {formatFileSize(result.originalSize - result.compressedSize)} (
+                      {Math.max(0, Math.round(((result.originalSize - result.compressedSize) / result.originalSize) * 100))}%)
+                    </dd>
+                  </div>
+                )}
+              </dl>
+            </div>
 
             <div className="flex flex-col gap-3 pt-2">
               <div className="flex flex-col sm:flex-row gap-3">
@@ -5360,11 +5832,11 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
 
               <a
                 href={result.url}
-                download={result.filename}
+                download={getResultDownloadName()}
                 onClick={handleDownloadResult}
                 className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md shadow-emerald-600/20 text-center flex items-center justify-center space-x-2 transition"
               >
-                {isProcessing && docxEditText !== null ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                 <span>{docxEditText !== null ? 'Download Edited File' : 'Download File'}</span>
               </a>
             </div>

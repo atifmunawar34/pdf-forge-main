@@ -95,6 +95,56 @@ const titleBand = (w, title, sub) => {
     w.y -= 60;
     return;
   }
+  if (th === 'stripe') {
+    // full-height accent rail at the page edge + square marker + ink title
+    const railX = va === 'panel' ? PAGE_W - 12 : 0;
+    const tx = va === 'panel' ? rx(T, 16, w.f.bold) - 20 : w.x + 20;
+    w.page.drawRectangle({ x: railX, y: 0, width: 12, height: PAGE_H, color: w.accent });
+    if (va === 'panel') w.page.drawRectangle({ x: tx - 18, y: w.y - 27, width: 10, height: 10, color: w.accent });
+    else w.page.drawRectangle({ x: w.x, y: w.y - 27, width: 10, height: 10, color: w.accent });
+    w.page.drawText(T, { x: tx, y: w.y - 26, size: 16, font: w.f.bold, color: w.ink });
+    w.y -= 33;
+    if (sub) {
+      const s = san(sub);
+      const sx = va === 'panel' ? rx(s, 8.5, w.f.reg) - 20 : w.x + 20;
+      w.page.drawText(s, { x: sx, y: w.y - 8, size: 8.5, font: w.f.reg, color: w.gray });
+      w.y -= 12;
+    }
+    w.rule(w.accent, 1.2, w.x, va === 'panel' ? w.x + w.w - 20 : w.x + w.w);
+    w.y -= 14;
+    return;
+  }
+  if (th === 'edge') {
+    const spaced = T.split('').join(' ');
+    if (va === 'split') {
+      // split header — caps title left, meta right with accent vertical rule
+      if (sub) {
+        const s = san(sub).toUpperCase();
+        const sw = w.f.bold.widthOfTextAtSize(s, 7.5);
+        w.page.drawText(s, { x: w.x + w.w - sw, y: w.y - 12, size: 7.5, font: w.f.bold, color: w.gray });
+        w.page.drawRectangle({ x: w.x + w.w - sw - 12, y: w.y - 14.5, width: 2.5, height: 15, color: w.accent });
+      }
+      w.page.drawText(spaced, { x: w.x, y: w.y - 13, size: 11, font: w.f.bold, color: w.ink });
+      w.y -= 22;
+      w.page.drawRectangle({ x: w.x, y: w.y, width: 34, height: 3, color: w.accent });
+      w.y -= 8;
+      w.rule(w.ink, 1.6);
+      w.y -= 12;
+      return;
+    }
+    // minimal — spaced small caps, top double rule, accent dash
+    w.page.drawLine({ start: { x: w.x, y: w.y + 4 }, end: { x: w.x + w.w, y: w.y + 4 }, thickness: 1.8, color: w.ink });
+    w.page.drawLine({ start: { x: w.x, y: w.y + 8 }, end: { x: w.x + w.w, y: w.y + 8 }, thickness: 0.5, color: w.accent });
+    w.page.drawText(spaced, { x: w.x, y: w.y - 13, size: 11, font: w.f.bold, color: w.ink });
+    if (sub) {
+      const s = san(sub).toUpperCase();
+      w.page.drawText(s, { x: rx(s, 7.5, w.f.bold), y: w.y - 12, size: 7.5, font: w.f.bold, color: w.accent });
+    }
+    w.y -= 23;
+    w.page.drawRectangle({ x: w.x, y: w.y, width: 34, height: 3, color: w.accent });
+    w.y -= 16;
+    return;
+  }
   // modern
   if (va === 'rail') {
     // thick left rail + plain title, no fill
@@ -144,7 +194,17 @@ export function invoice(w, tpl, v, images) {
   const acc = w.accent;
   const th = w.theme || 'modern';
 
-  if (th === 'modern' || th === 'bold') {
+  if (th === 'stripe') {
+    // full-height rail (left, or right for the panel variant) + slim top strip
+    w.page.drawRectangle({ x: w.variant === 'panel' ? PAGE_W - 12 : 0, y: 0, width: 12, height: PAGE_H, color: acc });
+    w.page.drawRectangle({ x: 0, y: PAGE_H - 5, width: PAGE_W, height: 5, color: acc });
+    w.y = PAGE_H - 40;
+  } else if (th === 'edge') {
+    // minimal double rule, no fills
+    w.page.drawLine({ start: { x: w.x, y: PAGE_H - 34 }, end: { x: w.x + w.w, y: PAGE_H - 34 }, thickness: 1.8, color: w.ink });
+    w.page.drawLine({ start: { x: w.x, y: PAGE_H - 38 }, end: { x: w.x + w.w, y: PAGE_H - 38 }, thickness: 0.5, color: acc });
+    w.y = PAGE_H - 52;
+  } else if (th === 'modern' || th === 'bold') {
     const va = w.variant;
     if (th === 'modern' && va === 'rail') {
       // tall left accent rail instead of a top band
@@ -179,7 +239,7 @@ export function invoice(w, tpl, v, images) {
   // big title + meta box on the right
   w.gap(6);
   const topY = w.y;
-  const titleColor = th === 'classic' || th === 'elegant' ? w.ink : acc;
+  const titleColor = th === 'classic' || th === 'elegant' || th === 'edge' ? w.ink : acc;
   w.text(tpl.name.toUpperCase(), { size: 24, font: w.f.bold, color: titleColor, maxW: w.w - 220 });
   const meta = sec(tpl, 'meta');
   if (meta) {
@@ -251,8 +311,9 @@ export function receipt(w, tpl, v) {
   const acc = w.accent;
   const th = w.theme || 'modern';
   const issuer = v.company?.name || '';
-  if (th === 'modern' || th === 'bold') {
+  if (th === 'modern' || th === 'bold' || th === 'stripe') {
     const va = w.variant;
+    if (th === 'stripe') w.page.drawRectangle({ x: va === 'panel' ? PAGE_W - 12 : 0, y: 0, width: 12, height: PAGE_H, color: acc });
     const bandColor = th === 'bold' ? w.ink : acc;
     if (th === 'modern' && va === 'boxed') {
       // bordered title box instead of a filled band
@@ -319,10 +380,14 @@ export function letter(w, tpl, v) {
   if (snd) {
     const sv = v.sender || {};
     // letterhead: accent name + contact line + rule
-    w.text(sv.name || '', { size: 16, font: w.f.bold, color: w.accent });
+    const isEdge = (w.theme || 'modern') === 'edge';
+    w.text(sv.name || '', { size: 16, font: w.f.bold, color: isEdge ? w.ink : w.accent });
     const contact = snd.fields.filter((fd) => fd.key !== 'name' && sv[fd.key]).map((fd) => sv[fd.key]);
     if (contact.length) w.text(contact.join('   |   '), { size: 8.5, color: w.gray });
-    w.gap(6); w.rule(w.accent, 1.6); w.gap(16);
+    w.gap(6);
+    if (isEdge) { w.rule(w.ink, 1.4); w.y -= 2.5; w.rule(w.accent, 0.5); }
+    else w.rule(w.accent, 1.6);
+    w.gap(16);
   }
   const doc = sec(tpl, 'doc');
   if (doc) {

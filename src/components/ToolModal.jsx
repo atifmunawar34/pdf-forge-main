@@ -6,6 +6,8 @@ import {
   checkPptxPassword,
   checkExcelPassword
 } from '../utils/pdfWorker';
+import { popupBus } from '../utils/popupBus';
+import { MAX_FILE_MB, TOOL_FORMATS } from '../data/popupConfig';
 
 export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles, initialImageCards, initialHtmlCode, initialHtmlMode }) {
   const [errorMsg, setErrorMsg] = useState('');
@@ -13,6 +15,7 @@ export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles,
   const [lockedFiles, setLockedFiles] = useState([]);
   const [htmlMode, setHtmlMode] = useState('file');
   const [rawHtml, setRawHtml] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
 
   const getFileInputAccept = () => {
     if (tool.id === 'jpg-to-pdf' || tool.id === 'scan') return 'image/jpeg,image/png,image/webp';
@@ -35,6 +38,30 @@ export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles,
 
     const newFilesArray = Array.from(fileList);
     const lockedNames = [];
+
+    // File size limit
+    const tooBig = newFilesArray.find((f) => f.size > MAX_FILE_MB * 1048576);
+    if (tooBig) {
+      popupBus.show({ type: 'file-limit', fileName: tooBig.name, limitMb: MAX_FILE_MB });
+      return;
+    }
+
+    // Unsupported file type (normalize common extension aliases: .jpeg→.jpg etc.)
+    const allowed = TOOL_FORMATS[tool.id] || TOOL_FORMATS.default;
+    const badFile = newFilesArray.find((f) => {
+      const raw = f.name.split('.').pop()?.toUpperCase();
+      const ext = { JPEG: 'JPG', JPE: 'JPG', HTM: 'HTML', TIF: 'TIFF', MARKDOWN: 'MD' }[raw] || raw;
+      return !allowed.includes(ext);
+    });
+    if (badFile) {
+      popupBus.show({
+        type: 'unsupported',
+        fileName: badFile.name,
+        formats: allowed,
+        onRetry: () => document.getElementById('modalFileInput')?.click(),
+      });
+      return;
+    }
 
     try {
       if (tool.id === 'compare' && newFilesArray.length < 2) {
@@ -129,7 +156,7 @@ export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles,
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-white rounded-3xl w-full max-w-lg p-6 sm:p-8 shadow-2xl border border-slate-100 relative animate-in fade-in zoom-in-95 duration-150">
+      <div className="bg-white rounded-3xl w-full max-w-lg p-6 sm:p-8 shadow-2xl border border-slate-100 relative animate-in fade-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto">
         <button
           onClick={onClose}
           className="absolute top-5 right-5 p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 transition cursor-pointer"
@@ -226,12 +253,18 @@ export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles,
         ) : (
           <>
           <div
-            onDragOver={(e) => e.preventDefault()}
+            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+            onDragLeave={() => setIsDragging(false)}
             onDrop={(e) => {
               e.preventDefault();
+              setIsDragging(false);
               handleFilesSelected(e.dataTransfer.files);
             }}
-            className="border-2 border-dashed border-slate-200 hover:border-rose-400 rounded-2xl p-8 text-center bg-slate-50/50 hover:bg-rose-50/30 transition cursor-pointer"
+            className={`border-2 border-dashed rounded-2xl p-8 text-center transition cursor-pointer ${
+              isDragging
+                ? 'border-rose-500 bg-rose-50/60 scale-[1.01]'
+                : 'border-slate-200 hover:border-rose-400 bg-slate-50/50 hover:bg-rose-50/30'
+            }`}
           >
             <input
               type="file"
@@ -249,7 +282,7 @@ export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles,
                 </div>
               ) : (
                 <>
-                  <UploadCloud className="w-10 h-10 text-slate-400 mx-auto" />
+                  <UploadCloud className={`w-10 h-10 mx-auto transition ${isDragging ? 'text-rose-500 pf-float' : 'text-slate-400'}`} />
                   <p className="text-sm font-medium text-slate-700">
                     Drop {tool.id === 'merge' || tool.id === 'compare' ? 'PDF files' : tool.id === 'scan' || tool.id === 'jpg-to-pdf' ? 'images' : 'document'} here or <span className="text-rose-500 font-bold">browse</span>
                   </p>

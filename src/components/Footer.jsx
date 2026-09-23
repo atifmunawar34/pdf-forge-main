@@ -1,6 +1,6 @@
-import React from 'react';
 import { Layers, ShieldCheck } from 'lucide-react';
 import { PDF_CATEGORIES } from '../data/pdfTools';
+import { popupBus } from '../utils/popupBus';
 
 const QUICK_LINKS = [
   { toolId: 'merge', label: 'Merge & Split PDF' },
@@ -20,7 +20,7 @@ function findTool(toolId) {
 export default function Footer({ onSelectTool }) {
   return (
     <footer className="bg-slate-900 text-slate-300 border-t border-slate-800">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+      <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-12">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
           {/* Brand & Mission */}
           <div className="space-y-4 md:col-span-2">
@@ -81,8 +81,31 @@ export default function Footer({ onSelectTool }) {
               </svg>
               <span>GitHub</span>
             </a>
-            <span className="hover:text-slate-400 cursor-pointer">Privacy Policy</span>
-            <span className="hover:text-slate-400 cursor-pointer">Terms of Service</span>
+            <button
+              type="button"
+              onClick={() => popupBus.show({
+                type: 'announcement',
+                title: 'Privacy Policy',
+                description: 'Your files are processed in memory and never stored, logged, or shared. Heavy conversions run in ephemeral server tasks that discard data immediately after the response. No account, no tracking, no retention.',
+                secondaryLabel: 'Close',
+              })}
+              className="hover:text-slate-400 transition cursor-pointer"
+            >Privacy Policy</button>
+            <button
+              type="button"
+              onClick={() => popupBus.show({
+                type: 'announcement',
+                title: 'Terms of Service',
+                description: 'PDF Forge is a free, open-source utility provided as-is. Use it only for files you own or have rights to modify. Processed output is generated in your browser session and is your responsibility to verify.',
+                secondaryLabel: 'Close',
+              })}
+              className="hover:text-slate-400 transition cursor-pointer"
+            >Terms of Service</button>
+            <button
+              type="button"
+              onClick={() => popupBus.show({ type: 'feedback' })}
+              className="hover:text-slate-400 transition cursor-pointer"
+            >Send Feedback</button>
           </div>
         </div>
       </div>

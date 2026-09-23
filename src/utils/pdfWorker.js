@@ -606,7 +606,7 @@ export async function pdfToJpg(file) {
 
   if (numPages === 1) {
     const page = await pdf.getPage(1);
-    const viewport = page.getViewport({ scale: 2.0 });
+    const viewport = page.getViewport({ scale: 3.0 });
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
     canvas.height = viewport.height;
@@ -624,7 +624,7 @@ export async function pdfToJpg(file) {
   const zip = new JSZip();
   for (let i = 1; i <= numPages; i++) {
     const page = await pdf.getPage(i);
-    const viewport = page.getViewport({ scale: 2.0 });
+    const viewport = page.getViewport({ scale: 3.0 });
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
     canvas.height = viewport.height;
@@ -1225,7 +1225,7 @@ async function convertPdfToWordLocal(file) {
       continue;
     }
 
-    const viewport = page.getViewport({ scale: 1.6 });
+    const viewport = page.getViewport({ scale: 2.4 });
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     canvas.width = viewport.width;
@@ -1237,7 +1237,7 @@ async function convertPdfToWordLocal(file) {
     mediaFiles.push({
       relId,
       imageName,
-      bytes: dataUrlToUint8Array(canvas.toDataURL('image/jpeg', 0.85)),
+      bytes: dataUrlToUint8Array(canvas.toDataURL('image/jpeg', 0.95)),
     });
 
     const maxWidthEmu = 9360000;
@@ -2351,7 +2351,7 @@ export async function performPdfOcr(file, options = {}) {
       });
 
       const page = await pdfJsDoc.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 2.0 });
+      const viewport = page.getViewport({ scale: 3.0 });
 
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
@@ -2365,7 +2365,7 @@ export async function performPdfOcr(file, options = {}) {
       extractedFullText += `--- Page ${pageNum} ---\n` + (data.text || '') + '\n\n';
 
       if (outputMode === 'searchable_pdf') {
-        const imgDataUrl = canvas.toDataURL('image/jpeg', 0.88);
+        const imgDataUrl = canvas.toDataURL('image/png');
         const imgBytes = await (await fetch(imgDataUrl)).arrayBuffer();
         const embeddedImg = await outputPdfDoc.embedJpg(imgBytes);
 
@@ -2453,9 +2453,11 @@ export async function renderBlobPdfPreview(blob, maxPages = 40) {
   }).promise;
   const pages = [];
   const limit = Math.min(pdf.numPages, maxPages);
+  // High-DPI render: scale ~2.2 + lossless PNG so the preview stays sharp when zoomed
+  const scale = 2.2 * Math.min(window.devicePixelRatio || 1, 2);
   for (let i = 1; i <= limit; i++) {
     const page = await pdf.getPage(i);
-    const viewport = page.getViewport({ scale: 1.35 });
+    const viewport = page.getViewport({ scale });
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     canvas.width = viewport.width;
@@ -2463,10 +2465,24 @@ export async function renderBlobPdfPreview(blob, maxPages = 40) {
     await page.render({ canvasContext: ctx, viewport }).promise;
     pages.push({
       pageNumber: i,
-      dataUrl: canvas.toDataURL('image/jpeg', 0.88),
+      dataUrl: canvas.toDataURL('image/png'),
     });
   }
   return { pages, totalPages: pdf.numPages };
+}
+
+/** Render one page of a PDF Blob at an arbitrary scale — used for sharp zoomed previews. */
+export async function renderBlobPdfPage(blob, pageNum = 1, scale = 2) {
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), stopAtErrors: false }).promise;
+  const target = Math.max(1, Math.min(pageNum, pdf.numPages));
+  const page = await pdf.getPage(target);
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  return canvas.toDataURL('image/png');
 }
 
 export async function extractPdfPlainText(file) {
@@ -2655,7 +2671,7 @@ export async function comparePDFs(fileA, fileB) {
     const renderSide = async (pdf, pageNum) => {
       if (pageNum > pdf.numPages) return null;
       const page = await pdf.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 1.15 });
+      const viewport = page.getViewport({ scale: 2.0 });
       const canvas = document.createElement('canvas');
       canvas.width = viewport.width;
       canvas.height = viewport.height;
@@ -2883,7 +2899,7 @@ export async function pdfToImageFormat(file, format = 'png') {
   const mime = format === 'webp' ? 'image/webp' : 'image/png';
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
-    const viewport = page.getViewport({ scale: 2 });
+    const viewport = page.getViewport({ scale: 3.0 });
     const canvas = document.createElement('canvas');
     canvas.width = viewport.width;
     canvas.height = viewport.height;
@@ -3011,7 +3027,7 @@ async function pdfToGrayscaleClient(file) {
   const out = await PDFDocument.create();
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
-    const viewport = page.getViewport({ scale: 1.5 });
+    const viewport = page.getViewport({ scale: 2.4 });
     const canvas = document.createElement('canvas');
     canvas.width = viewport.width;
     canvas.height = viewport.height;

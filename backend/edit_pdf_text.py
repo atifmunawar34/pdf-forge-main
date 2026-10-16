@@ -111,6 +111,40 @@ def extract_font_file(doc, page, span_font_name):
     return None
 
 
+def find_system_font(family, bold=False, italic=False):
+    """Find a system TTF file for a font family on macOS.
+    Returns a path or None."""
+    import glob
+    import os
+    family_lc = family.lower()
+    # macOS font directories
+    dirs = [
+        "/System/Library/Fonts",
+        "/System/Library/Fonts/Supplemental",
+        "/Library/Fonts",
+        os.path.expanduser("~/Library/Fonts"),
+    ]
+    for d in dirs:
+        if not os.path.isdir(d):
+            continue
+        for f in glob.glob(os.path.join(d, "*.ttf")) + glob.glob(os.path.join(d, "*.ttc")) + glob.glob(os.path.join(d, "*.otf")):
+            name = os.path.basename(f).lower()
+            # match family name
+            if family_lc in name:
+                # prefer bold/italic if requested
+                if bold and ("bold" in name or "black" in name or "heavy" in name):
+                    return f
+                if italic and ("italic" in name or "oblique" in name or "slant" in name):
+                    return f
+                if not bold and not italic:
+                    # avoid bold/italic when not requested
+                    if "bold" not in name and "italic" not in name and "oblique" not in name:
+                        return f
+                # fallback to any match
+                return f
+    return None
+
+
 def builtin_font_name(span_font_name, bold=False, italic=False):
     """Fallback PyMuPDF Base-14 font name."""
     n = (span_font_name or "").lower()
@@ -163,8 +197,13 @@ def apply_replace(doc, page, e):
     if span and e.get("color") is None:
         color = srgb(span[2])
 
-    fontfile = extract_font_file(doc, page, span_font)
-    fontname = "F0" if fontfile else builtin_font_name(span_font)
+    # user may override the font family from the editor toolbar
+    family_override = e.get("family")
+    if family_override:
+        fontfile = find_system_font(family_override, e.get("bold"), e.get("italic"))
+    else:
+        fontfile = extract_font_file(doc, page, span_font)
+    fontname = "F0" if fontfile else builtin_font_name(family_override or span_font)
     try:
         mfont = fitz.Font(fontfile=fontfile) if fontfile else fitz.Font(fontname)
     except Exception:
@@ -185,15 +224,26 @@ def apply_replace(doc, page, e):
     if not text.strip():
         return
 
-    # 3. re-insert wrapped text with the original font
+    # 3. re-insert text with the original font
     bx, by = e.get("baseline", [rect.x0, rect.y0 + size * 0.8])
     lh = size * float(e.get("lineHeight") or 1.22)
+    kw = dict(fontsize=size, color=color, render_mode=0)
+    if fontfile:
+        kw.update(fontname=fontname, fontfile=fontfile)
+    else:
+        kw.update(fontname=fontname)
+
+    orig_pts = e.get("lines") or []
+    draft_lines = text.split("\n")
+    if orig_pts and len(draft_lines) == len(orig_pts):
+        # same line count — draw each line at its ORIGINAL position so
+        # indentation, alignment and wide in-line gaps are preserved
+        for i, ln in enumerate(draft_lines):
+            if ln.strip():
+                page.insert_text(tuple(orig_pts[i]), ln, **kw)
+        return
+
     for i, ln in enumerate(wrap_lines(mfont, text, size, max_w)):
-        kw = dict(fontsize=size, color=color, render_mode=0)
-        if fontfile:
-            kw.update(fontname=fontname, fontfile=fontfile)
-        else:
-            kw.update(fontname=fontname)
         page.insert_text((bx, by + i * lh), ln, **kw)
 
 
@@ -205,33 +255,26 @@ def apply_edit(doc, page, e):
 
     if action in ("whiteout", "redact"):
         if action == "redact":
-            fill = (0, 0, 0)
+            fill = srgb(e["color"]) if e.get("color") is not None else (0, 0, 0)
         else:
             fill = srgb(e["bg"]) if e.get("bg") is not None else dominant_bg(page, fitz.Rect(e["rect"]))
         page.add_redact_annot(fitz.Rect(e["rect"]), fill=fill)
         page.apply_redactions()
         return
 
-    if action == "highlight":
+    if action in ("highlight", "underline", "strikeout"):
+        col = srgb(e.get("color")) if e.get("color") is not None else None
+        add_fn = {
+            "highlight": page.add_highlight_annot,
+            "underline": page.add_underline_annot,
+            "strikeout": page.add_strikeout_annot,
+        }[action]
         for r in e.get("rects", []):
             try:
-                page.add_highlight_annot(fitz.Rect(r))
-            except Exception:
-                pass
-        return
-
-    if action == "underline":
-        for r in e.get("rects", []):
-            try:
-                page.add_underline_annot(fitz.Rect(r))
-            except Exception:
-                pass
-        return
-
-    if action == "strikeout":
-        for r in e.get("rects", []):
-            try:
-                page.add_strikeout_annot(fitz.Rect(r))
+                annot = add_fn(fitz.Rect(r))
+                if col is not None:
+                    annot.set_colors(stroke=col)
+                    annot.update()
             except Exception:
                 pass
         return
@@ -240,8 +283,22 @@ def apply_edit(doc, page, e):
         bx, by = e["baseline"]
         size = float(e.get("fontSize") or 12)
         color = srgb(e.get("color", [0, 0, 0]))
-        fname = builtin_font_name(e.get("family", "Helvetica"),
-                                  e.get("bold"), e.get("italic"))
+        family = e.get("family", "Helvetica")
+        bold = e.get("bold", False)
+        italic = e.get("italic", False)
+        # try to find a real system TTF first
+        fontfile = find_system_font(family, bold, italic)
+        if fontfile:
+            try:
+                mfont = fitz.Font(fontfile=fontfile)
+                page.insert_text((bx, by), e.get("text", ""),
+                                 fontname="F0", fontfile=fontfile,
+                                 fontsize=size, color=color)
+                return
+            except Exception:
+                pass
+        # fallback to Base-14
+        fname = builtin_font_name(family, bold, italic)
         page.insert_text((bx, by), e.get("text", ""),
                          fontname=fname, fontsize=size, color=color)
         return

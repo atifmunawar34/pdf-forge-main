@@ -124,6 +124,10 @@ const sampleRectColors = (ctx, x, y, w, h, dpr = 1) => {
 };
 
 const rgbCss = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
+const hexToRgbaCss = (hex, a) => {
+  const c = hexToRgb(hex);
+  return `rgba(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${a})`;
+};
 const rgbToHex = (c) => '#' + c.map(v => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('');
 
 // Wrap text into lines that fit `maxWidth` PDF units at `size`
@@ -190,7 +194,13 @@ function extractBlocks(textContent, viewport, page) {
     if (line) {
       const gap = it.vx - (line.vx + line.vw);
       line.items.push(it);
-      line.str += (gap > it.vFontH * 0.3 && !line.str.endsWith(' ') && !it.str.startsWith(' ')) ? ' ' + it.str : it.str;
+      // preserve wide gaps as proportional space runs (justified text,
+      // tab-like indents, right-aligned dates on resumes)
+      const spaceW = Math.max(1, it.vFontH * 0.28);
+      const nSpaces = Math.max(1, Math.round(gap / spaceW));
+      line.str += (gap > it.vFontH * 0.3 && !line.str.endsWith(' ') && !it.str.startsWith(' '))
+        ? ' '.repeat(nSpaces) + it.str
+        : it.str;
       line.vx = Math.min(line.vx, it.vx);
       const right = Math.max(line.vx + line.vw, it.vx + it.vw);
       line.vw = right - line.vx;
@@ -245,6 +255,19 @@ function extractBlocks(textContent, viewport, page) {
       });
     }
   }
+  // measure each block's real line spacing (leading) from baseline gaps —
+  // fixed 1.22 collapses the space between lines while editing
+  for (const b of blocks) {
+    const ys = b.lines.map(l => l.baselineY).sort((a, z) => a - z);
+    const gaps = [];
+    for (let i = 1; i < ys.length; i++) {
+      const g = ys[i] - ys[i - 1];
+      if (g > 1) gaps.push(g);
+    }
+    b.lineH = gaps.length
+      ? gaps.sort((a, z) => a - z)[Math.floor(gaps.length / 2)]
+      : b.vFontH * 1.22;
+  }
   return blocks;
 }
 
@@ -254,11 +277,17 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   const canvasRef = useRef(null);
   const scrollRef = useRef(null);
   const drawState = useRef({ drawing: false, erasing: false, pts: [], start: null });
+  // pixel snapshot of the region under the active edit — restored instantly
+  // on cancel so the page never has to re-render (no blink)
+  const editSnap = useRef(null);
+  // per-block region snapshots for instant decoration toggles (highlight,
+  // underline, strikeout, redact) — keyed by block id, cleared on re-render
+  const decSnap = useRef(new Map());
 
   const [pdfDoc, setPdfDoc] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
-  const [scale, setScale] = useState(1.3);
+  const [scale, setScale] = useState(1.9);
   const [isRendering, setIsRendering] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -275,7 +304,21 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   const history = useRef({ past: [], future: [] });
   const [histLen, setHistLen] = useState({ past: 0, future: 0 });
 
-  const [fmt, setFmt] = useState({ fontSize: 12, bold: false, italic: false, underline: false, color: '#000000', family: 'Helvetica', colorTouched: false });
+  const [fmt, setFmt] = useState({ fontSize: 12, bold: false, italic: false, underline: false, color: '#000000', family: 'Helvetica', colorTouched: false, fontTouched: false, sizeTouched: false });
+  // per-tool colors — pickable in the ribbon when the tool is active
+  const [toolColors, setToolColors] = useState({
+    highlight: '#ffeb3b', underline: '#1d4ed8', strikeout: '#dc2626',
+    redact: '#000000', draw: '#dc2626',
+  });
+  // macOS system fonts for Add Text — list expanded for variety
+  const fontOptions = [
+    'Helvetica', 'Arial', 'Arial Black', 'Arial Narrow',
+    'Times New Roman', 'Georgia', 'Palatino', 'Garamond',
+    'Courier New', 'Courier', 'Monaco', 'Menlo',
+    'Verdana', 'Trebuchet MS', 'Impact', 'Comic Sans MS',
+    'Optima', 'Futura', 'Baskerville', 'Hoefler Text',
+    'Didot', 'American Typewriter', 'Rockwell', 'Charcoal',
+  ];
 
   const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
 
@@ -312,12 +355,14 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     }
   };
 
-  const renderPage = async (pageNum, pdf = pdfDoc) => {
+  const renderPage = async (pageNum, pdf = pdfDoc, dataOverride = null) => {
     if (!pdf || pageNum < 1 || pageNum > pdf.numPages) return;
     setIsRendering(true);
     setActiveEdit(null);
     setPendingAdd(null);
     setEraseRect(null);
+    editSnap.current = null; // clear snapshot on page nav
+    decSnap.current.clear();
     try {
       const page = await pdf.getPage(pageNum);
       // Hi-DPI render: backing store at scale*dpr, CSS size at logical scale
@@ -337,7 +382,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
       const textContent = await page.getTextContent();
       const blocks = extractBlocks(textContent, logicalVp, page);
 
-      const old = pageData[pageNum];
+      const old = (dataOverride || pageData)[pageNum];
       let mergedBlocks = blocks;
       let added = [];
       let drawings = [];
@@ -354,7 +399,10 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
           return prior
             ? { ...b, edited: prior.edited, text: prior.text, hidden: prior.hidden,
                 hl: prior.hl, redact: prior.redact, uline: prior.uline, strike: prior.strike,
-                color: prior.color, bgColor: prior.bgColor, textColor: prior.textColor }
+                color: prior.color, bgColor: prior.bgColor, textColor: prior.textColor,
+                fontOverride: prior.fontOverride, sizeOverride: prior.sizeOverride,
+                hlColor: prior.hlColor, ulColor: prior.ulColor,
+                strikeColor: prior.strikeColor, redactColor: prior.redactColor }
             : b;
         });
         added = (old.added || []).map(a => ({
@@ -370,7 +418,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
         ...prev,
         [pageNum]: { blocks: mergedBlocks, added, drawings, erasures, canvasW: logicalVp.width, canvasH: logicalVp.height },
       }));
-      replayCanvasEdits(ctx, mergedBlocks, added, drawings, erasures, logicalVp);
+      replayCanvasEdits(ctx, mergedBlocks, drawings, erasures, logicalVp);
       setCurrentPage(pageNum);
     } catch (e) {
       console.error('Render failed:', e);
@@ -388,14 +436,32 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   };
 
   const drawBlockTextCanvas = (ctx, b, text) => {
-    const fsPx = b.vFontH * 0.95;
-    const lh = fsPx * 1.22;
+    const fsPx = (b.sizeOverride ? b.sizeOverride * scale : b.vFontH) * 0.95;
+    const lh = b.lineH || fsPx * 1.22; // real leading measured from the PDF
     const fi = b.font || {};
     ctx.fillStyle = b.color || (b.textColor ? rgbCss(b.textColor) : '#000000');
-    // real embedded font — weight/style live inside the FontFace itself
-    ctx.font = `${fi.cssStyle && fi.cssStyle !== 'normal' ? fi.cssStyle + ' ' : ''}` +
-               `${fi.cssWeight && fi.cssWeight !== 'normal' ? fi.cssWeight + ' ' : ''}` +
-               `${fsPx}px ${fi.family || 'sans-serif'}`;
+    // real embedded font — weight/style live inside the FontFace itself;
+    // fontOverride switches to a chosen CSS family
+    ctx.font = b.fontOverride
+      ? `${fsPx}px "${b.fontOverride}", sans-serif`
+      : `${fi.cssStyle && fi.cssStyle !== 'normal' ? fi.cssStyle + ' ' : ''}` +
+        `${fi.cssWeight && fi.cssWeight !== 'normal' ? fi.cssWeight + ' ' : ''}` +
+        `${fsPx}px ${fi.family || 'sans-serif'}`;
+    const draftLines = text.split('\n');
+    const origLines = b.lines || [];
+    // same line count → draw each line at its ORIGINAL position so
+    // indentation, right-aligned text and wide gaps are preserved
+    if (origLines.length > 1 && draftLines.length === origLines.length) {
+      ctx.textBaseline = 'alphabetic';
+      let maxY = 0;
+      draftLines.forEach((ln, i) => {
+        const ol = origLines[i];
+        ctx.fillText(ln, ol.vx, ol.baselineY);
+        maxY = Math.max(maxY, ol.vy + ol.vh);
+      });
+      b.vhDrawn = Math.max(0, maxY - b.vy);
+      return;
+    }
     ctx.textBaseline = 'top';
     const words = text.split(/\s+/);
     let line = '';
@@ -412,28 +478,51 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     b.vhDrawn = maxY - b.vy;
   };
 
-  const drawAddedTextCanvas = (ctx, a) => {
-    ctx.fillStyle = a.color || '#000000';
-    ctx.font = `${a.italic ? 'italic ' : ''}${a.bold ? 'bold ' : ''}${a.vFontH}px ${a.family || 'Helvetica'}`;
-    ctx.textBaseline = 'top';
-    ctx.fillText(a.text, a.vx, a.vy);
-    if (a.underline) {
-      const w = ctx.measureText(a.text).width;
-      ctx.fillRect(a.vx, a.vy + a.vFontH * 1.02, w, Math.max(1, a.vFontH * 0.06));
-    }
-  };
-
   const paintBlockDecorations = (ctx, b) => {
     for (const ln of b.lines || []) {
       if (b.uline) {
-        ctx.fillStyle = '#000000';
+        ctx.fillStyle = b.ulColor || '#000000';
         ctx.fillRect(ln.vx, ln.vy + ln.vh * 0.92, ln.vw, Math.max(1, ln.vFontH * 0.07));
       }
       if (b.strike) {
-        ctx.fillStyle = '#000000';
+        ctx.fillStyle = b.strikeColor || '#000000';
         ctx.fillRect(ln.vx, ln.vy + ln.vh * 0.45, ln.vw, Math.max(1, ln.vFontH * 0.07));
       }
     }
+  };
+
+  // snapshot a block's canvas region once (before any decoration is painted)
+  // so toggles can restore + repaint instantly without a full page re-render
+  const ensureDecSnap = (ctx, b) => {
+    if (decSnap.current.has(b.id)) return;
+    const pad = 3;
+    const canvas = canvasRef.current;
+    const sx = Math.max(0, Math.round((b.vx - pad) * dpr));
+    const sy = Math.max(0, Math.round((b.vy - pad) * dpr));
+    const sw = Math.min(canvas.width - sx, Math.round((b.vw + pad * 2) * dpr));
+    const sh = Math.min(canvas.height - sy, Math.round((Math.max(b.vh, b.vhDrawn || 0) + pad * 2) * dpr));
+    try { decSnap.current.set(b.id, { img: ctx.getImageData(sx, sy, sw, sh), sx, sy }); } catch { /* noop */ }
+  };
+
+  // restore the region and repaint the block's current decorations — instant,
+  // no re-render, no blink
+  const repaintBlockRegion = (ctx, b) => {
+    const snap = decSnap.current.get(b.id);
+    if (snap) {
+      ctx.putImageData(snap.img, snap.sx, snap.sy);
+    } else {
+      // no snapshot — repaint what's gone is impossible, just paint over
+    }
+    if (b.redact) {
+      ctx.fillStyle = b.redactColor || '#000000';
+      ctx.fillRect(b.vx, b.vy, b.vw, Math.max(b.vh, b.vhDrawn || 0));
+      return;
+    }
+    if (b.hl) {
+      ctx.fillStyle = b.hlColor ? hexToRgbaCss(b.hlColor, 0.45) : 'rgba(255, 235, 59, 0.45)';
+      for (const ln of b.lines || [b]) ctx.fillRect(ln.vx, ln.vy, ln.vw, ln.vh);
+    }
+    paintBlockDecorations(ctx, b);
   };
 
   const drawStroke = (ctx, s, logicalVp) => {
@@ -451,7 +540,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   };
 
   // Redraw all committed edits on a freshly rendered canvas
-  const replayCanvasEdits = (ctx, blocks, added, drawings, erasures, logicalVp) => {
+  const replayCanvasEdits = (ctx, blocks, drawings, erasures, logicalVp) => {
     for (const e of erasures) {
       ctx.fillStyle = e.bg ? rgbCss(e.bg) : '#ffffff';
       ctx.fillRect(e.nx * logicalVp.width, e.ny * logicalVp.height, e.nw * logicalVp.width, e.nh * logicalVp.height);
@@ -459,21 +548,25 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     for (const b of blocks) {
       if (b.hidden) { whiteoutBlockCanvas(ctx, b); continue; }
       if (b.redact) {
-        ctx.fillStyle = '#000000';
+        ctx.fillStyle = b.redactColor || '#000000';
         ctx.fillRect(b.vx, b.vy, b.vw, b.vh);
         continue;
       }
+      const paintHl = () => {
+        ctx.fillStyle = b.hlColor ? hexToRgbaCss(b.hlColor, 0.45) : 'rgba(255, 235, 59, 0.45)';
+        // paint per-line — tight to the text, not the whole block box
+        for (const ln of b.lines || [b]) ctx.fillRect(ln.vx, ln.vy, ln.vw, ln.vh);
+      };
       if (b.edited) {
         whiteoutBlockCanvas(ctx, b);
+        if (b.hl) paintHl(); // highlight under the re-drawn text
         if (b.text?.trim()) drawBlockTextCanvas(ctx, b, b.text);
-      }
-      if (b.hl) {
-        ctx.fillStyle = 'rgba(255, 235, 59, 0.45)';
-        ctx.fillRect(b.vx, b.vy, b.vw, Math.max(b.vh, b.vhDrawn || 0));
+      } else if (b.hl) {
+        paintHl();
       }
       paintBlockDecorations(ctx, b);
     }
-    for (const a of added) drawAddedTextCanvas(ctx, a);
+    // added text is rendered as DOM elements (draggable) — not drawn on canvas
     for (const s of drawings) drawStroke(ctx, s, logicalVp);
   };
 
@@ -493,8 +586,11 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     if (prev == null) return;
     history.current.future.push(JSON.stringify(pageData));
     syncHist();
-    setPageData(JSON.parse(prev));
-    await renderPage(currentPage);
+    const restored = JSON.parse(prev);
+    setPageData(restored);
+    editSnap.current = null;
+    // pass the restored data — pageData state hasn't flushed yet
+    await renderPage(currentPage, pdfDoc, restored);
   };
 
   const redo = async () => {
@@ -502,8 +598,10 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     if (next == null) return;
     history.current.past.push(JSON.stringify(pageData));
     syncHist();
-    setPageData(JSON.parse(next));
-    await renderPage(currentPage);
+    const restored = JSON.parse(next);
+    setPageData(restored);
+    editSnap.current = null;
+    await renderPage(currentPage, pdfDoc, restored);
   };
 
   // ---------- interactions ----------
@@ -524,6 +622,12 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     e.stopPropagation();
     const ctx = canvasRef.current.getContext('2d');
     if (mode === 'edit') {
+      // restore a previous in-progress edit's snapshot before switching blocks
+      if (editSnap.current && activeEdit?.id && activeEdit.id !== b.id) {
+        const ctx0 = canvasRef.current.getContext('2d');
+        ctx0.putImageData(editSnap.current.img, editSnap.current.sx, editSnap.current.sy);
+        editSnap.current = null;
+      }
       setActiveEdit({ type: 'block', id: b.id, page: currentPage, draft: b.edited ? b.text : b.str });
       // sample the real background + text colors under the block (works on
       // dark/colored pages — whiteing out would paint a glaring white box)
@@ -532,20 +636,44 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
         const c = sampleRectColors(ctx, b.vx - 1, b.vy - 1, b.vw + 2, Math.max(b.vh, b.vhDrawn || 0) + 2, dpr);
         if (c) { b.bgColor = c.bg; b.textColor = c.fg; }
       }
-      setFmt(f => ({ ...f, fontSize: Math.round(b.pdfFs), color: b.color || (b.textColor ? rgbToHex(b.textColor) : '#000000'), colorTouched: !!b.color }));
+      setFmt(f => ({
+        ...f,
+        fontSize: Math.round(b.sizeOverride || b.pdfFs),
+        family: b.fontOverride || b.font?.realName?.replace(/^[A-Z]+\+/, '') || f.family,
+        bold: b.font?.bold || false, italic: b.font?.italic || false, underline: false,
+        color: b.color || (b.textColor ? rgbToHex(b.textColor) : '#000000'),
+        colorTouched: !!b.color, fontTouched: !!b.fontOverride, sizeTouched: !!b.sizeOverride,
+      }));
+      // snapshot the pixels BEFORE whiting out — cancel restores them instantly
+      const pad = 2;
+      const canvas = canvasRef.current;
+      const sx = Math.max(0, Math.round((b.vx - pad) * dpr));
+      const sy = Math.max(0, Math.round((b.vy - pad) * dpr));
+      const sw = Math.min(canvas.width - sx, Math.round((b.vw + pad * 2) * dpr));
+      const sh = Math.min(canvas.height - sy, Math.round((Math.max(b.vh, b.vhDrawn || 0) + pad * 2) * dpr));
+      try { editSnap.current = { img: ctx.getImageData(sx, sy, sw, sh), sx, sy }; } catch { editSnap.current = null; }
       // whiteout the original text on canvas so it doesn't ghost behind the editor
       whiteoutBlockCanvas(ctx, b);
     } else if (mode === 'highlight' || mode === 'redact' || mode === 'underline' || mode === 'strikeout') {
       snapshot();
-      const patch = mode === 'highlight' ? { hl: !b.hl }
-                  : mode === 'redact' ? { redact: !b.redact }
-                  : mode === 'underline' ? { uline: !b.uline }
-                  : { strike: !b.strike };
-      updateBlock(b.id, patch);
-      // re-render whole page to keep layering simple
-      setTimeout(() => renderPage(currentPage), 0);
+      const patch = mode === 'highlight' ? { hl: !b.hl, hlColor: toolColors.highlight }
+                  : mode === 'redact' ? { redact: !b.redact, redactColor: toolColors.redact }
+                  : mode === 'underline' ? { uline: !b.uline, ulColor: toolColors.underline }
+                  : { strike: !b.strike, strikeColor: toolColors.strikeout };
+      const patched = { ...b, ...patch };
+      // snapshot the region, then repaint instantly — no re-render, no blink
+      ensureDecSnap(ctx, b);
+      repaintBlockRegion(ctx, patched);
+      setPageData(prev => ({
+        ...prev,
+        [currentPage]: {
+          ...prev[currentPage],
+          blocks: prev[currentPage].blocks.map(x => x.id === b.id ? patched : x),
+        },
+      }));
     } else if (mode === 'erase') {
       snapshot();
+      decSnap.current.delete(b.id); // region content changes — drop snapshot
       if (!b.bgColor) {
         const c = sampleRectColors(ctx, b.vx - 1, b.vy - 1, b.vw + 2, b.vh + 2, dpr);
         if (c) { b.bgColor = c.bg; b.textColor = c.fg; }
@@ -555,9 +683,18 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     }
   };
 
-  // cancel an edit — restore the whited-out original by re-rendering the page
+  // cancel an edit — restore the whited-out original pixels instantly
+  // (no full page re-render → no blink)
   const cancelEdit = () => {
-    if (activeEdit?.type === 'block') renderPage(currentPage);
+    if (activeEdit?.type === 'block') {
+      if (editSnap.current) {
+        const ctx = canvasRef.current.getContext('2d');
+        ctx.putImageData(editSnap.current.img, editSnap.current.sx, editSnap.current.sy);
+        editSnap.current = null;
+      } else {
+        renderPage(currentPage); // fallback only if snapshot failed
+      }
+    }
     setActiveEdit(null);
     setPendingAdd(null);
   };
@@ -568,12 +705,16 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     const b = getCur().blocks.find(x => x.id === id);
     if (!b) { setActiveEdit(null); return; }
     snapshot();
+    editSnap.current = null; // edit committed — discard the restore snapshot
+    decSnap.current.delete(id); // region content changed — stale snapshot must go
     const ctx = canvasRef.current.getContext('2d');
     const color = fmt.colorTouched ? fmt.color : b.color;
-    const nb = { ...b, edited: true, text: draft, color };
+    const fontOverride = fmt.fontTouched ? fmt.family : b.fontOverride;
+    const sizeOverride = fmt.sizeTouched ? fmt.fontSize : b.sizeOverride;
+    const nb = { ...b, edited: true, text: draft, color, fontOverride, sizeOverride };
     whiteoutBlockCanvas(ctx, nb);
     if (draft.trim()) drawBlockTextCanvas(ctx, nb, draft);
-    updateBlock(id, { edited: true, text: draft, color, vhDrawn: nb.vhDrawn });
+    updateBlock(id, { edited: true, text: draft, color, fontOverride, sizeOverride, vhDrawn: nb.vhDrawn });
     setActiveEdit(null);
   };
 
@@ -602,10 +743,8 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   const commitAddText = () => {
     if (!pendingAdd || !addDraft.trim()) { setPendingAdd(null); setActiveEdit(null); return; }
     snapshot();
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
     const a = {
-      id: `a-${(getCur().added?.length || 0) + 1}`, text: addDraft,
+      id: `a-${++addedSeq.current}`, text: addDraft,
       vx: pendingAdd.vx, vy: pendingAdd.vy,
       nx: pendingAdd.vx / getCur().canvasW,
       ny: pendingAdd.vy / getCur().canvasH,
@@ -614,7 +753,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
       bold: fmt.bold, italic: fmt.italic, underline: fmt.underline,
       color: fmt.color, family: fmt.family,
     };
-    drawAddedTextCanvas(ctx, a);
+    // added text renders as a draggable DOM element (not baked into canvas)
     setPageData(prev => ({
       ...prev,
       [currentPage]: { ...prev[currentPage], added: [...(prev[currentPage].added || []), a] },
@@ -622,6 +761,61 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     setPendingAdd(null);
     setAddDraft('');
     setActiveEdit(null);
+  };
+
+  // ---------- added-text drag & drop ----------
+  const dragAdded = useRef(null);
+  const addedSeq = useRef(0);
+
+  const startDragAdded = (e, a) => {
+    if (mode === 'draw' || mode === 'erase') return;
+    e.stopPropagation();
+    e.preventDefault();
+    snapshot(); // drag is undoable
+    dragAdded.current = { id: a.id, startX: e.clientX, startY: e.clientY, vx: a.vx, vy: a.vy };
+    const onMove = (ev) => {
+      const d = dragAdded.current;
+      if (!d) return;
+      const nvx = d.vx + (ev.clientX - d.startX);
+      const nvy = d.vy + (ev.clientY - d.startY);
+      setPageData(prev => ({
+        ...prev,
+        [currentPage]: {
+          ...prev[currentPage],
+          added: (prev[currentPage].added || []).map(x =>
+            x.id === d.id ? { ...x, vx: nvx, vy: nvy, nx: nvx / (prev[currentPage].canvasW || 1), ny: nvy / (prev[currentPage].canvasH || 1) } : x),
+        },
+      }));
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      dragAdded.current = null;
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  const deleteAdded = (a) => {
+    snapshot();
+    setPageData(prev => ({
+      ...prev,
+      [currentPage]: { ...prev[currentPage], added: (prev[currentPage].added || []).filter(x => x.id !== a.id) },
+    }));
+  };
+
+  // double-click → put it back into the input for re-editing
+  const reEditAdded = (a) => {
+    if (mode === 'draw' || mode === 'erase') return;
+    snapshot();
+    setPendingAdd({ vx: a.vx, vy: a.vy, pdfX: a.pdfX, pdfY: a.pdfY });
+    setAddDraft(a.text);
+    setFmt(f => ({ ...f, fontSize: a.pdfFs, family: a.family, bold: a.bold, italic: a.italic, underline: a.underline, color: a.color || '#000000', colorTouched: true }));
+    setActiveEdit({ type: 'add', page: currentPage });
+    setPageData(prev => ({
+      ...prev,
+      [currentPage]: { ...prev[currentPage], added: (prev[currentPage].added || []).filter(x => x.id !== a.id) },
+    }));
   };
 
   // pointer handlers for draw / erase-rect on the overlay layer
@@ -646,7 +840,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
       const ctx = canvasRef.current.getContext('2d');
       const n = ds.pts.length;
       if (n >= 2) {
-        ctx.strokeStyle = '#dc2626';
+        ctx.strokeStyle = toolColors.draw;
         ctx.lineWidth = 2;
         ctx.lineCap = 'round';
         ctx.beginPath();
@@ -666,7 +860,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     const ds = drawState.current;
     if (ds.drawing && ds.pts.length > 1) {
       snapshot();
-      const stroke = { pts: ds.pts, color: '#dc2626', width: 2 };
+      const stroke = { pts: ds.pts, color: toolColors.draw, width: 2 };
       setPageData(prev => ({
         ...prev,
         [currentPage]: { ...prev[currentPage], drawings: [...(prev[currentPage].drawings || []), stroke] },
@@ -704,24 +898,29 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
         // only send a color the user explicitly picked — otherwise the backend
         // reuses the EXACT original span color from the PDF
         const fg255 = b.color ? c255(b.color) : null;
-        if (b.redact) { edits.push({ action: 'redact', rect }); continue; }
+        if (b.redact) { edits.push({ action: 'redact', rect, color: c255(b.redactColor || '#000000') }); continue; }
         if (b.hidden) { edits.push({ action: 'whiteout', rect, bg: bg255 }); continue; }
         if (b.edited) {
           const l0 = b.lines[0] || b;
           edits.push({
             action: 'replace', rect, text: b.text ?? '',
             baseline: [l0.vx / scale, l0.baselineY / scale],
-            fontSize: b.pdfFs, maxWidth: b.vw / scale,
+            // original per-line positions — backend draws each line at its own
+            // x/baseline when line count matches (keeps indents & alignment)
+            lines: (b.lines || []).map(l => [l.vx / scale, l.baselineY / scale]),
+            fontSize: b.sizeOverride || b.pdfFs, maxWidth: b.vw / scale,
             font: b.font?.realName || '',
+            family: b.fontOverride || null,
             bg: bg255,
-            color: fg255, lineHeight: 1.22,
+            color: fg255,
+            lineHeight: (b.lineH || b.vFontH * 1.22) / (scale * b.pdfFs),
           });
         }
         const lineRects = (b.lines || []).map(l =>
           [l.vx / scale, l.vy / scale, (l.vx + l.vw) / scale, (l.vy + l.vh) / scale]);
-        if (b.hl) edits.push({ action: 'highlight', rects: lineRects });
-        if (b.uline) edits.push({ action: 'underline', rects: lineRects });
-        if (b.strike) edits.push({ action: 'strikeout', rects: lineRects });
+        if (b.hl) edits.push({ action: 'highlight', rects: lineRects, color: c255(b.hlColor || '#ffeb3b') });
+        if (b.uline) edits.push({ action: 'underline', rects: lineRects, color: c255(b.ulColor || '#000000') });
+        if (b.strike) edits.push({ action: 'strikeout', rects: lineRects, color: c255(b.strikeColor || '#000000') });
       }
       for (const e of pd.erasures || []) {
         edits.push({
@@ -816,10 +1015,11 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
       for (const b of pd.blocks || []) {
         const topPdf = height - b.vy / scale;
         if (b.redact) {
+          const rc = hexToRgb(b.redactColor || '#000000');
           page.drawRectangle({
             x: b.vx / scale, y: topPdf - b.vh / scale,
             width: b.vw / scale, height: b.vh / scale,
-            color: rgb(0, 0, 0),
+            color: rgb(rc.r, rc.g, rc.b),
           });
           continue;
         }
@@ -840,39 +1040,49 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
           if (b.text?.trim()) {
             const flags = parseFontFlags(b.font?.realName || '');
             const font = pick(b.font?.bold ?? flags.bold, b.font?.italic ?? flags.italic, flags.pdfFamily);
-            const fs = b.pdfFs;
-            const lh = fs * 1.22;
+            const fs = b.sizeOverride || b.pdfFs;
+            const lh = b.lineH ? b.lineH / scale : fs * 1.22;
             const wrapped = wrapText(b.text, font, fs, b.vw / scale);
             const c = hexToRgb(b.color || '#000000');
-            wrapped.forEach((ln, i) => {
-              page.drawText(ln, {
-                x: b.pdfX, y: b.pdfY - i * lh,
-                size: fs, font, color: rgb(c.r, c.g, c.b),
+            const draftLines = b.text.split('\n');
+            if (b.lines?.length > 1 && draftLines.length === b.lines.length) {
+              // draw each line at its original position (keeps indents/alignment)
+              draftLines.forEach((ln, i) => {
+                if (ln.trim()) page.drawText(ln, { x: b.lines[i].pdfX, y: b.lines[i].pdfY, size: fs, font, color: rgb(c.r, c.g, c.b) });
               });
-            });
+            } else {
+              wrapped.forEach((ln, i) => {
+                page.drawText(ln, {
+                  x: b.pdfX, y: b.pdfY - i * lh,
+                  size: fs, font, color: rgb(c.r, c.g, c.b),
+                });
+              });
+            }
           }
         }
         if (b.hl) {
+          const hc = hexToRgb(b.hlColor || '#ffeb3b');
           page.drawRectangle({
             x: b.vx / scale, y: topPdf - Math.max(b.vh, b.vhDrawn || 0) / scale,
             width: b.vw / scale, height: Math.max(b.vh, b.vhDrawn || 0) / scale,
-            color: rgb(1, 0.92, 0.23), opacity: 0.45,
+            color: rgb(hc.r, hc.g, hc.b), opacity: 0.45,
           });
         }
         for (const ln of b.lines || []) {
-          const c = hexToRgb('#000000');
           if (b.uline) {
+            const uc = hexToRgb(b.ulColor || '#000000');
             page.drawLine({
               start: { x: ln.pdfX, y: ln.pdfY - ln.pdfFs * 0.12 },
               end: { x: ln.pdfX + ln.pdfW, y: ln.pdfY - ln.pdfFs * 0.12 },
-              thickness: Math.max(0.4, ln.pdfFs * 0.05), color: rgb(c.r, c.g, c.b),
+              thickness: Math.max(0.4, ln.pdfFs * 0.05), color: rgb(uc.r, uc.g, uc.b),
             });
           }
           if (b.strike) {
+            const sc = hexToRgb(b.strikeColor || '#000000');
             page.drawLine({
               start: { x: ln.pdfX, y: ln.pdfY + ln.pdfFs * 0.3 },
               end: { x: ln.pdfX + ln.pdfW, y: ln.pdfY + ln.pdfFs * 0.3 },
-              thickness: Math.max(0.4, ln.pdfFs * 0.05), color: rgb(c.r, c.g, c.b),
+              thickness: Math.max(0.4, ln.pdfFs * 0.05), color: rgb(sc.r, sc.g, sc.b),
             });
           }
         }
@@ -920,9 +1130,27 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { const t = setTimeout(loadPdf, 0); return () => clearTimeout(t); }, [file]);
 
+  // keyboard shortcuts: Cmd/Ctrl+Z undo, Cmd+Shift+Z / Ctrl+Y redo
+  useEffect(() => {
+    const onKey = (e) => {
+      // don't hijack undo while typing in the edit box
+      if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+        e.preventDefault(); undo();
+      } else if ((e.metaKey || e.ctrlKey) && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) {
+        e.preventDefault(); redo();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageData, currentPage]);
+
   // re-render page when zoom changes (skip initial mount)
   useEffect(() => {
     if (firstScale.current) { firstScale.current = false; return; }
+    editSnap.current = null; // clear snapshot on zoom
+    decSnap.current.clear();
     renderPage(currentPage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scale]);
@@ -945,13 +1173,19 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     const contentW = taW - 10; // textarea padding + border allowance
     const dispLines = lines.reduce((n, l) =>
       n + Math.max(1, Math.ceil(measureW(l || ' ', fi, fs) / Math.max(1, contentW))), 0);
-    taH = Math.max(activeBlock.vh + 6, dispLines * fs * 1.22 + 8);
+    taH = Math.max(activeBlock.vh + 6, dispLines * (activeBlock.lineH || fs * 1.22) + 8);
   }
+
+  const handleModeChange = (id) => {
+    cancelEdit();
+    editSnap.current = null; // clear snapshot when mode changes
+    setMode(id);
+  };
 
   const toolBtn = (id, Icon, label) => (
     <button
       key={id}
-      onClick={() => { cancelEdit(); setMode(id); }}
+      onClick={() => handleModeChange(id)}
       className={`flex flex-col items-center justify-center px-2.5 py-1.5 rounded-md transition cursor-pointer min-w-[52px] ${
         mode === id ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'
       }`}
@@ -1005,6 +1239,20 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
         {toolBtn('draw', PenTool, 'Drawing')}
         {toolBtn('erase', Eraser, 'Eraser')}
 
+        {/* per-tool color picker — visible when a color-capable tool is active */}
+        {toolColors[mode] && (
+          <div className="flex items-center space-x-1.5 pl-2 ml-1 border-l border-slate-200">
+            <input
+              type="color"
+              value={toolColors[mode]}
+              onChange={(e) => setToolColors(c => ({ ...c, [mode]: e.target.value }))}
+              className="w-6 h-6 rounded border border-slate-300 cursor-pointer"
+              title={`${mode} color`}
+            />
+            <span className="text-[9px] font-semibold text-slate-500 uppercase">{mode} color</span>
+          </div>
+        )}
+
         <div className="flex-1" />
 
         <div className="flex items-center space-x-1 pl-2 border-l border-slate-200">
@@ -1018,42 +1266,8 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
         </div>
       </div>
 
-      {/* Formatting mini-toolbar (visible when editing) */}
-      {activeEdit && (
-        <div className="bg-white border-b border-slate-200 px-4 py-1.5 flex items-center space-x-3 shrink-0 shadow-sm text-xs">
-          {activeEdit.type === 'add' ? (
-            <>
-              <select
-                value={fmt.family}
-                onChange={(e) => setFmt(f => ({ ...f, family: e.target.value }))}
-                className="px-2 py-1 border border-slate-300 rounded font-medium"
-              >
-                <option>Helvetica</option>
-                <option>Times New Roman</option>
-                <option>Courier New</option>
-              </select>
-              <input
-                type="number" min={6} max={96} value={fmt.fontSize}
-                onChange={(e) => setFmt(f => ({ ...f, fontSize: parseInt(e.target.value) || 12 }))}
-                className="w-14 px-2 py-1 border border-slate-300 rounded text-center font-medium"
-              />
-              <button onClick={() => setFmt(f => ({ ...f, bold: !f.bold }))} className={`p-1.5 rounded cursor-pointer ${fmt.bold ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`}><Bold className="w-3.5 h-3.5" /></button>
-              <button onClick={() => setFmt(f => ({ ...f, italic: !f.italic }))} className={`p-1.5 rounded cursor-pointer ${fmt.italic ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`}><Italic className="w-3.5 h-3.5" /></button>
-              <button onClick={() => setFmt(f => ({ ...f, underline: !f.underline }))} className={`p-1.5 rounded cursor-pointer ${fmt.underline ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`}><Underline className="w-3.5 h-3.5" /></button>
-            </>
-          ) : (
-            <span className="text-slate-500 font-medium">
-              Font: <span className="text-slate-800 font-bold">{activeBlock?.font?.realName || 'embedded'}</span>
-              {activeBlock?.font?.bold && <span className="ml-1.5 px-1 py-0.5 bg-slate-800 text-white rounded text-[9px]">BOLD</span>}
-              {activeBlock?.font?.italic && <span className="ml-1 px-1 py-0.5 bg-slate-800 text-white rounded text-[9px]">ITALIC</span>}
-            </span>
-          )}
-          <input type="color" value={fmt.color} onChange={(e) => setFmt(f => ({ ...f, color: e.target.value, colorTouched: true }))} className="w-7 h-7 rounded border border-slate-300 cursor-pointer" title="Text color" />
-          <div className="h-5 w-px bg-slate-300" />
-          <button onClick={activeEdit.type === 'add' ? commitAddText : commitBlockEdit} className="px-3 py-1 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded cursor-pointer">OK</button>
-          <button onClick={cancelEdit} className="px-3 py-1 border border-slate-300 hover:bg-slate-100 font-bold rounded cursor-pointer">Cancel</button>
-        </div>
-      )}
+      {/* Formatting mini-toolbar is rendered as a floating bar above the
+          active edit box — see the overlay layer below */}
 
       {/* Main area: canvas + thumbnail sidebar */}
       <div className="flex-1 min-h-0 flex">
@@ -1102,12 +1316,79 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
                 );
               })}
 
+              {/* draggable added text — DOM elements so they can be moved,
+                  double-clicked to re-edit, or deleted */}
+              {(cur.added || []).map(a => (
+                <div
+                  key={a.id}
+                  onMouseDown={(e) => startDragAdded(e, a)}
+                  onDoubleClick={(e) => { e.stopPropagation(); reEditAdded(a); }}
+                  className="absolute group select-none"
+                  style={{
+                    left: a.vx, top: a.vy,
+                    color: a.color || '#000000',
+                    fontFamily: cssFor(a.family),
+                    fontSize: a.vFontH,
+                    fontWeight: a.bold ? 'bold' : 'normal',
+                    fontStyle: a.italic ? 'italic' : 'normal',
+                    textDecoration: a.underline ? 'underline' : 'none',
+                    lineHeight: 1.2, whiteSpace: 'pre',
+                    cursor: ['draw', 'erase'].includes(mode) ? 'default' : 'move',
+                    pointerEvents: ['draw', 'erase'].includes(mode) ? 'none' : 'auto',
+                    zIndex: 15,
+                  }}
+                >
+                  {a.text}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); deleteAdded(a); }}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    className="hidden group-hover:flex absolute -top-2.5 -right-2.5 w-4 h-4 items-center justify-center bg-red-500 text-white rounded-full cursor-pointer"
+                    title="Delete"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+
               {/* erase drag preview */}
               {eraseRect && (
                 <div
                   className="absolute border-2 border-dashed border-red-400 bg-white/60"
                   style={{ left: eraseRect.x, top: eraseRect.y, width: eraseRect.w, height: eraseRect.h, pointerEvents: 'none' }}
                 />
+              )}
+
+              {/* Floating format bar — pdfsimpli style, right above the box */}
+              {activeBlock && (
+                <div
+                  className="absolute z-40 flex items-center space-x-1.5 bg-white rounded-lg shadow-lg border border-slate-200 px-2 py-1"
+                  style={{
+                    left: Math.max(4, activeBlock.vx),
+                    top: activeBlock.vy > 52 ? activeBlock.vy - 46 : activeBlock.vy + taH + 8,
+                    pointerEvents: 'auto',
+                  }}
+                >
+                  <select
+                    value={fmt.family}
+                    onChange={(e) => setFmt(f => ({ ...f, family: e.target.value, fontTouched: true }))}
+                    className="px-1.5 py-1 border border-slate-300 rounded text-[11px] font-medium max-w-[140px] cursor-pointer"
+                  >
+                    {!fontOptions.includes(fmt.family) && <option>{fmt.family}</option>}
+                    {fontOptions.map(f => <option key={f}>{f}</option>)}
+                  </select>
+                  <input
+                    type="number" min={6} max={96} value={fmt.fontSize}
+                    onChange={(e) => setFmt(f => ({ ...f, fontSize: parseInt(e.target.value) || 12, sizeTouched: true }))}
+                    className="w-12 px-1.5 py-1 border border-slate-300 rounded text-center text-[11px] font-medium"
+                  />
+                  <button onClick={() => setFmt(f => ({ ...f, bold: !f.bold, fontTouched: true }))} className={`p-1 rounded cursor-pointer ${fmt.bold ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`} title="Bold"><Bold className="w-3.5 h-3.5" /></button>
+                  <button onClick={() => setFmt(f => ({ ...f, italic: !f.italic, fontTouched: true }))} className={`p-1 rounded cursor-pointer ${fmt.italic ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`} title="Italic"><Italic className="w-3.5 h-3.5" /></button>
+                  <button onClick={() => setFmt(f => ({ ...f, underline: !f.underline }))} className={`p-1 rounded cursor-pointer ${fmt.underline ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`} title="Underline"><Underline className="w-3.5 h-3.5" /></button>
+                  <input type="color" value={fmt.color} onChange={(e) => setFmt(f => ({ ...f, color: e.target.value, colorTouched: true }))} className="w-6 h-6 rounded border border-slate-300 cursor-pointer" title="Text color" />
+                  <div className="h-4 w-px bg-slate-300" />
+                  <button onClick={commitBlockEdit} className="px-2.5 py-1 bg-slate-800 hover:bg-slate-900 text-white text-[11px] font-bold rounded cursor-pointer">OK</button>
+                  <button onClick={cancelEdit} className="px-2 py-1 border border-slate-300 hover:bg-slate-100 text-[11px] font-bold rounded cursor-pointer">Cancel</button>
+                </div>
               )}
 
               {/* Active block editor */}
@@ -1124,18 +1405,50 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
                     width: taW,
                     height: taH,
                     backgroundColor: activeBlock.bgColor ? rgbCss(activeBlock.bgColor) : '#ffffff',
-                    fontSize: activeBlock.vFontH,
-                    lineHeight: 1.22,
+                    fontSize: fmt.sizeTouched ? fmt.fontSize * scale : activeBlock.vFontH,
+                    lineHeight: `${(activeBlock.lineH || activeBlock.vFontH * 1.22)}px`,
                     // real embedded font — bold/italic are inside the font itself
-                    fontFamily: activeBlock.font?.family || cssFor(fmt.family),
-                    fontWeight: activeBlock.font?.cssWeight || 'normal',
-                    fontStyle: activeBlock.font?.cssStyle || 'normal',
+                    fontFamily: fmt.fontTouched ? `"${fmt.family}", sans-serif` : (activeBlock.font?.family || cssFor(fmt.family)),
+                    fontWeight: fmt.fontTouched ? (fmt.bold ? 'bold' : 'normal') : (activeBlock.font?.cssWeight || 'normal'),
+                    fontStyle: fmt.fontTouched ? (fmt.italic ? 'italic' : 'normal') : (activeBlock.font?.cssStyle || 'normal'),
                     textDecoration: 'none',
                     color: fmt.color,
                     caretColor: fmt.color,
                     pointerEvents: 'auto',
                   }}
                 />
+              )}
+
+              {/* Floating format bar for Add Text */}
+              {pendingAdd && activeEdit?.type === 'add' && (
+                <div
+                  className="absolute z-40 flex items-center space-x-1.5 bg-white rounded-lg shadow-lg border border-slate-200 px-2 py-1"
+                  style={{
+                    left: Math.max(4, pendingAdd.vx),
+                    top: pendingAdd.vy > 52 ? pendingAdd.vy - 46 : pendingAdd.vy + 34,
+                    pointerEvents: 'auto',
+                  }}
+                >
+                  <select
+                    value={fmt.family}
+                    onChange={(e) => setFmt(f => ({ ...f, family: e.target.value }))}
+                    className="px-1.5 py-1 border border-slate-300 rounded text-[11px] font-medium max-w-[140px] cursor-pointer"
+                  >
+                    {fontOptions.map(f => <option key={f}>{f}</option>)}
+                  </select>
+                  <input
+                    type="number" min={6} max={96} value={fmt.fontSize}
+                    onChange={(e) => setFmt(f => ({ ...f, fontSize: parseInt(e.target.value) || 12 }))}
+                    className="w-12 px-1.5 py-1 border border-slate-300 rounded text-center text-[11px] font-medium"
+                  />
+                  <button onClick={() => setFmt(f => ({ ...f, bold: !f.bold }))} className={`p-1 rounded cursor-pointer ${fmt.bold ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`} title="Bold"><Bold className="w-3.5 h-3.5" /></button>
+                  <button onClick={() => setFmt(f => ({ ...f, italic: !f.italic }))} className={`p-1 rounded cursor-pointer ${fmt.italic ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`} title="Italic"><Italic className="w-3.5 h-3.5" /></button>
+                  <button onClick={() => setFmt(f => ({ ...f, underline: !f.underline }))} className={`p-1 rounded cursor-pointer ${fmt.underline ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`} title="Underline"><Underline className="w-3.5 h-3.5" /></button>
+                  <input type="color" value={fmt.color} onChange={(e) => setFmt(f => ({ ...f, color: e.target.value, colorTouched: true }))} className="w-6 h-6 rounded border border-slate-300 cursor-pointer" title="Text color" />
+                  <div className="h-4 w-px bg-slate-300" />
+                  <button onClick={commitAddText} className="px-2.5 py-1 bg-slate-800 hover:bg-slate-900 text-white text-[11px] font-bold rounded cursor-pointer">OK</button>
+                  <button onClick={() => { setPendingAdd(null); setActiveEdit(null); }} className="px-2 py-1 border border-slate-300 hover:bg-slate-100 text-[11px] font-bold rounded cursor-pointer">Cancel</button>
+                </div>
               )}
 
               {/* Add-text input */}

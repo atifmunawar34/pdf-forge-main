@@ -1,23 +1,7 @@
-import React, { useMemo } from 'react';
+import { useMemo } from 'react';
 import { ChevronRight, ArrowRight, CheckCircle2, HelpCircle } from 'lucide-react';
-import TextTool from './toolkit/TextTool';
-import CalcTool from './toolkit/CalcTool';
-import ConvertTool from './toolkit/ConvertTool';
-import GenerateTool from './toolkit/GenerateTool';
-import QrTool from './toolkit/QrTool';
-import ColorTool from './toolkit/ColorTool';
-import ImageTool from './toolkit/ImageTool';
-import FileTool from './toolkit/FileTool';
-import SeoTool from './toolkit/SeoTool';
-import AiTool from './toolkit/AiTool';
-import SpeechTool from './toolkit/SpeechTool';
+import { ENGINES } from './toolkit/engines';
 import { useSeo } from './toolkit/utils';
-
-export const ENGINES = {
-  text: TextTool, calc: CalcTool, convert: ConvertTool, generate: GenerateTool,
-  qr: QrTool, color: ColorTool, image: ImageTool, file: FileTool,
-  seo: SeoTool, ai: AiTool, speech: SpeechTool,
-};
 
 const DEFAULT_FAQS = (name) => [
   { q: `Is ${name} free?`, a: `Yes — ${name} is completely free, with no signup and no limits.` },

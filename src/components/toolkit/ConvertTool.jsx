@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ArrowLeftRight } from 'lucide-react';
 import { Field, NumInput, Select, ResultBox } from './bits';
 

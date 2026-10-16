@@ -1,6 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { Btn, Field, Input, TextArea, ResultBox } from './bits';
-import { downloadText } from './utils';
+import { useMemo, useState } from 'react';
+import { Btn, Field, Input, TextArea, ResultBox, DownloadBtn } from './bits';
 
 /**
  * SEO tool engine. def = {
@@ -87,9 +86,7 @@ export default function SeoTool({ def }) {
       {out?.text != null && (
         <ResultBox label="Output" copyText={out.text}>
           <pre className="font-mono text-xs text-slate-700 whitespace-pre-wrap break-all max-h-80 overflow-y-auto">{out.text}</pre>
-          <button onClick={() => downloadText(out.text, def.filename || 'output.txt', def.mime || 'text/plain')} className="mt-2 text-[11px] font-bold text-slate-400 hover:text-rose-500 cursor-pointer">
-            Download {def.filename || 'output.txt'}
-          </button>
+          <DownloadBtn text={out.text} filename={def.filename || 'output.txt'} mime={def.mime || 'text/plain'} label={`Download ${def.filename || 'output.txt'}`} variant="ghost" className="mt-2" />
         </ResultBox>
       )}
     </div>

@@ -95,11 +95,11 @@ async function convertDocxToPdf(fileBuffer, originalFilename) {
 }
 
 // Ghostscript-based legacy converter (kept for reference — superseded by convertViaPython)
-async function convertDocxToPdfLegacy(fileBuffer, originalFilename) {
+async function _convertDocxToPdfLegacy(fileBuffer, originalFilename) {
   const tempId = `docx_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
   const tempDir = os.tmpdir();
   const inputPath = path.join(tempDir, `${tempId}_${originalFilename}`);
-  const rawPdfPath = path.join(tempDir, `${tempId}_raw.pdf`);
+  const _rawPdfPath = path.join(tempDir, `${tempId}_raw.pdf`);
   const finalPdfPath = path.join(tempDir, `${tempId}_final.pdf`);
   const userProfileDir = path.join(tempDir, `lo_profile_${tempId}`);
 
@@ -801,7 +801,7 @@ sys.exit(0)
  * Executes a PDF crop operation using Ghostscript.
  * It maps normalized client coordinates to page dimensions.
  */
-async function executeGhostscriptCrop(inputBuffer, cropParams, originalFilename) {
+async function executeGhostscriptCrop(inputBuffer, cropParams, _originalFilename) {
   const tempId = `crop_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
   const tempDir = os.tmpdir();
   const inputPath = path.join(tempDir, `${tempId}_in.pdf`);
@@ -1030,7 +1030,7 @@ getTemplatesData();
 let templateUsage = {};
 try {
   templateUsage = JSON.parse(fsSync.readFileSync(TPL_USAGE_PATH, 'utf8'));
-} catch {}
+} catch { /* no saved usage counters yet */ }
 
 app.get('/api/templates', (req, res) => {
   const data = getTemplatesData();

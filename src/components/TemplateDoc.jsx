@@ -9,7 +9,7 @@ const ACCENT_HEX = {
   violet: '#7c3aed', indigo: '#4338ca', crimson: '#be123c', orange: '#ea580c',
   sky: '#0284c7', plum: '#86198f', olive: '#4d7c0f',
 };
-export const accentHex = (tpl) => ACCENT_HEX[tpl.accent] || ACCENT_HEX.rose;
+const accentHex = (tpl) => ACCENT_HEX[tpl.accent] || ACCENT_HEX.rose;
 
 const Label = ({ children }) => (
   <div className="text-[8px] font-bold uppercase tracking-wide text-slate-400">{children}</div>

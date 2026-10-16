@@ -1105,6 +1105,7 @@ export async function rotatePDF(file, options = 90) {
 
 function escapeXml(value) {
   return String(value)
+    // eslint-disable-next-line no-control-regex -- intentionally strips XML-illegal control chars
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -1596,7 +1597,7 @@ export async function addWatermarkToPDF(file, options) {
     rotation = 45,
     fromPage = 1,
     toPage = 1,
-    layer = 'over', // 'over' | 'below'
+    layer: _layer = 'over', // 'over' | 'below'
     fontFamily = 'Helvetica',
     fontSize = 36,
     isBold = false,
@@ -1945,7 +1946,7 @@ export async function extractPdfFormFields(file) {
           const xPercent = Math.max(0, Math.min(100 - widthPercent, (rect.x / pWidth) * 100));
           const yPercent = Math.max(0, Math.min(100 - heightPercent, ((pHeight - rect.y - rect.height) / pHeight) * 100));
 
-          let fieldType = 'text';
+          let fieldType;
           let value = '';
           let options = [];
 
@@ -2039,7 +2040,7 @@ export async function savePdfForms(file, formFields) {
     existingAcroFields.forEach((f) => {
       try {
         form.removeField(f);
-      } catch (_) {}
+      } catch { /* field may already be detached */ }
     });
 
     // Clean up annotation references on each page so no ghost borders stay behind
@@ -2175,7 +2176,7 @@ export async function savePdfForms(file, formFields) {
         let radioGroup;
         try {
           radioGroup = form.getRadioGroup(groupName);
-        } catch (_) {
+        } catch {
           radioGroup = form.createRadioGroup(groupName);
         }
 
@@ -2210,7 +2211,7 @@ export async function savePdfForms(file, formFields) {
           dropdown.select(optionsList[0]);
         }
 
-        try { dropdown.setFontSize(targetFontSize); } catch (_) {}
+        try { dropdown.setFontSize(targetFontSize); } catch { /* font size optional */ }
         dropdown.updateAppearances(fontRef);
 
         if (field.readOnly) dropdown.enableReadOnly();
@@ -2233,7 +2234,7 @@ export async function savePdfForms(file, formFields) {
           optionList.select(field.value);
         }
 
-        try { optionList.setFontSize(Math.max(6, targetFontSize - 1)); } catch (_) {}
+        try { optionList.setFontSize(Math.max(6, targetFontSize - 1)); } catch { /* font size optional */ }
         optionList.updateAppearances(fontRef);
 
         if (field.readOnly) optionList.enableReadOnly();
@@ -2247,7 +2248,7 @@ export async function savePdfForms(file, formFields) {
           height: pdfHeight,
         });
 
-        try { tf.setFontSize(Math.max(9, targetFontSize)); } catch (_) {}
+        try { tf.setFontSize(Math.max(9, targetFontSize)); } catch { /* font size optional */ }
         if (field.value) tf.setText(String(field.value));
         tf.updateAppearances(fonts.TimesBold);
         if (field.readOnly) tf.enableReadOnly();
@@ -2262,7 +2263,7 @@ export async function savePdfForms(file, formFields) {
         });
 
         if (field.multiline) tf.enableMultiline();
-        try { tf.setFontSize(targetFontSize); } catch (_) {}
+        try { tf.setFontSize(targetFontSize); } catch { /* font size optional */ }
 
         if (field.value !== undefined && field.value !== '') {
           tf.setText(String(field.value));
@@ -2405,7 +2406,7 @@ export async function performPdfOcr(file, options = {}) {
                 opacity: 0,
                 maxWidth: wordWidth + 4
               });
-            } catch (_) {
+            } catch {
               // Ignore unsupported character glyph exceptions safely
             }
           }
@@ -3120,6 +3121,7 @@ async function setPdfMetadataClient(file, meta) {
  * box-drawing chars, arrows, dingbats — with ASCII equivalents.
  */
 export const sanitizeForWinAnsi = (s) =>
+  // eslint-disable-next-line no-control-regex -- intentionally matches non-WinAnsi range
   s.replace(/[^\x00-\xFF]/g, (ch) => {
     const map = {
       '│': '|', '─': '-', '═': '=', '║': '|', '━': '-',

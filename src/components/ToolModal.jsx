@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { UploadCloud, X, Lock, Unlock, AlertCircle, Loader2, ArrowRight } from 'lucide-react';
+import { useState } from 'react';
+import { UploadCloud, X, AlertCircle, Loader2, ArrowRight } from 'lucide-react';
 import {
   checkPdfPassword,
   checkDocxPassword,
@@ -12,7 +12,7 @@ import { MAX_FILE_MB, TOOL_FORMATS } from '../data/popupConfig';
 export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles, initialImageCards, initialHtmlCode, initialHtmlMode }) {
   const [errorMsg, setErrorMsg] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
-  const [lockedFiles, setLockedFiles] = useState([]);
+  const [, setLockedFiles] = useState([]);
   const [htmlMode, setHtmlMode] = useState('file');
   const [rawHtml, setRawHtml] = useState('');
   const [isDragging, setIsDragging] = useState(false);
@@ -139,7 +139,7 @@ export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles,
 
       // Direct launch to full Studio for Merge PDF and all other tools
       onLaunchStudio(tool, { files: newFilesArray });
-    } catch (err) {
+    } catch {
       setErrorMsg('Failed to read file. Please ensure the document is not corrupted.');
     } finally {
       setIsVerifying(false);
@@ -253,6 +253,10 @@ export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles,
         ) : (
           <>
           <div
+            role="button"
+            tabIndex={0}
+            onClick={() => { if (!isVerifying) document.getElementById('modalFileInput')?.click(); }}
+            onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && !isVerifying) { e.preventDefault(); document.getElementById('modalFileInput')?.click(); } }}
             onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
             onDragLeave={() => setIsDragging(false)}
             onDrop={(e) => {
@@ -274,7 +278,7 @@ export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles,
               className="hidden"
               onChange={(e) => handleFilesSelected(e.target.files)}
             />
-            <label htmlFor="modalFileInput" className="cursor-pointer space-y-2 block">
+            <div className="space-y-2">
               {isVerifying ? (
                 <div className="py-4 space-y-2">
                   <Loader2 className="w-8 h-8 animate-spin mx-auto text-rose-500" />
@@ -301,7 +305,7 @@ export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles,
                   </p>
                 </>
               )}
-            </label>
+            </div>
           </div>
           {tool.id === 'scan' && !isVerifying && (
             <button

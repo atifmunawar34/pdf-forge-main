@@ -1289,8 +1289,9 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
 
   const resultMetaChanged = () =>
     isResultPdf() &&
-    ((editedResultMeta.title ?? resultFileInfo?.title ?? '') !== (resultFileInfo?.title ?? '') ||
-      (editedResultMeta.author ?? resultFileInfo?.author ?? '') !== (resultFileInfo?.author ?? ''));
+    ['title', 'author', 'subject', 'keywords', 'creator'].some(
+      (k) => (editedResultMeta[k] ?? resultFileInfo?.[k] ?? '') !== (resultFileInfo?.[k] ?? '')
+    );
 
   const handleDownloadResult = async (e) => {
     setResultZoom(1);
@@ -1306,9 +1307,9 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
         const meta = {
           title: editedResultMeta.title ?? resultFileInfo?.title ?? '',
           author: editedResultMeta.author ?? resultFileInfo?.author ?? '',
-          subject: resultFileInfo?.subject ?? '',
-          keywords: resultFileInfo?.keywords ?? '',
-          creator: resultFileInfo?.creator ?? '',
+          subject: editedResultMeta.subject ?? resultFileInfo?.subject ?? '',
+          keywords: editedResultMeta.keywords ?? resultFileInfo?.keywords ?? '',
+          creator: editedResultMeta.creator ?? resultFileInfo?.creator ?? '',
         };
         const file = new File([result.blob], result.filename, { type: 'application/pdf' });
         blob = (await setPdfMetadata(file, meta)).blob;
@@ -1660,11 +1661,13 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   };
 
   const togglePageSelection = (pageNum) => {
-    const updated = new Set(selectedPages);
-    if (updated.has(pageNum)) updated.delete(pageNum);
-    else updated.add(pageNum);
-    setSelectedPages(updated);
-    setRangeInput(setToStringRange(updated));
+    setSelectedPages((prev) => {
+      const updated = new Set(prev);
+      if (updated.has(pageNum)) updated.delete(pageNum);
+      else updated.add(pageNum);
+      setRangeInput(setToStringRange(updated));
+      return updated;
+    });
   };
 
   const handleRangeInputChange = (e) => {
@@ -5768,35 +5771,32 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                 )}
                 {resultFileInfo && (
                   <>
-                    <div className="min-w-0">
-                      <dt className="text-[10px] font-bold text-slate-400 uppercase">Title <span className="normal-case font-medium">(editable)</span></dt>
-                      <dd>
-                        <input
-                          type="text"
-                          value={editedResultMeta.title ?? resultFileInfo.title ?? ''}
-                          onChange={(e) => setEditedResultMeta((p) => ({ ...p, title: e.target.value }))}
-                          placeholder="—"
-                          className="w-full mt-0.5 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-semibold text-slate-800 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/15 transition"
-                        />
-                      </dd>
-                    </div>
-                    <div className="min-w-0">
-                      <dt className="text-[10px] font-bold text-slate-400 uppercase">Author <span className="normal-case font-medium">(editable)</span></dt>
-                      <dd>
-                        <input
-                          type="text"
-                          value={editedResultMeta.author ?? resultFileInfo.author ?? ''}
-                          onChange={(e) => setEditedResultMeta((p) => ({ ...p, author: e.target.value }))}
-                          placeholder="—"
-                          className="w-full mt-0.5 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-semibold text-slate-800 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/15 transition"
-                        />
-                      </dd>
-                    </div>
+                    {[
+                      ['title', 'Title'],
+                      ['author', 'Author'],
+                      ['subject', 'Subject'],
+                      ['keywords', 'Keywords'],
+                      ['creator', 'Creator'],
+                    ].map(([key, label]) => (
+                      <div key={key} className="min-w-0">
+                        <dt className="text-[10px] font-bold text-slate-400 uppercase">{label} <span className="normal-case font-medium">(editable)</span></dt>
+                        <dd>
+                          <input
+                            type="text"
+                            value={editedResultMeta[key] ?? resultFileInfo[key] ?? ''}
+                            onChange={(e) => setEditedResultMeta((p) => ({ ...p, [key]: e.target.value }))}
+                            placeholder="—"
+                            className="w-full mt-0.5 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-semibold text-slate-800 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/15 transition"
+                          />
+                        </dd>
+                      </div>
+                    ))}
                   </>
                 )}
                 {[
                   ['Producer', resultFileInfo?.producer],
                   ['Created', resultFileInfo?.creationDate],
+                  ['Modified', resultFileInfo?.modificationDate],
                 ].filter(([, v]) => v).map(([label, v]) => (
                   <div key={label} className="min-w-0">
                     <dt className="text-[10px] font-bold text-slate-400 uppercase">{label}</dt>

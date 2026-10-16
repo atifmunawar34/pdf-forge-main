@@ -1,7 +1,6 @@
-import React, { useMemo, useState } from 'react';
-import { Eraser } from 'lucide-react';
-import { Btn, Field, Input, NumInput, Select, TextArea, ResultBox } from './bits';
-import { downloadText } from './utils';
+import { useMemo, useRef, useState } from 'react';
+import { Eraser, FileUp, Loader2 } from 'lucide-react';
+import { Btn, Field, Input, NumInput, Select, TextArea, ResultBox, DownloadBtn } from './bits';
 
 /**
  * Text-based tool engine. def = {
@@ -18,8 +17,42 @@ export default function TextTool({ def }) {
   );
   const [opts, setOpts] = useState(initOpts);
   const [output, setOutput] = useState(null);
+  const [fileBusy, setFileBusy] = useState(false);
+  const [fileName, setFileName] = useState('');
+  const [fileErr, setFileErr] = useState('');
+  const fileInputRef = useRef(null);
 
   const run = () => setOutput(def.run(text, opts));
+
+  // Extract text from an uploaded file into the textarea
+  const readFile = async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    setFileErr('');
+    setFileName(f.name);
+    setFileBusy(true);
+    try {
+      const ext = (f.name.split('.').pop() || '').toLowerCase();
+      let extracted;
+      if (ext === 'pdf' || f.type === 'application/pdf') {
+        const { pdfToTxt } = await import('../../utils/pdfWorker');
+        extracted = await (await pdfToTxt(f)).blob.text();
+      } else if (ext === 'docx' || f.name.toLowerCase().endsWith('.docx')) {
+        const { extractDocxText } = await import('../../utils/pdfWorker');
+        extracted = await extractDocxText(f);
+      } else {
+        extracted = await f.text();
+      }
+      setText(extracted.trim());
+      setOutput(null);
+    } catch {
+      setFileErr(`Could not read "${f.name}" — try a PDF, DOCX or plain-text file.`);
+      setFileName('');
+    } finally {
+      setFileBusy(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -31,6 +64,34 @@ export default function TextTool({ def }) {
           placeholder={def.placeholder || 'Paste or type your text here…'}
         />
       </Field>
+
+      {def.acceptFile && (
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={fileBusy}
+            className="pf-press px-4 py-2.5 rounded-xl font-bold text-sm bg-slate-100 hover:bg-slate-200 text-slate-700 transition cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+          >
+            {fileBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileUp className="w-4 h-4" />}
+            {fileBusy ? 'Reading file…' : 'Upload file instead'}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".txt,.md,.markdown,.csv,.tsv,.html,.htm,.json,.xml,.rtf,.pdf,.docx,.doc,text/plain,application/pdf"
+            className="hidden"
+            onChange={readFile}
+          />
+          {fileName && !fileBusy && (
+            <span className="text-[11px] font-semibold text-slate-400 truncate">
+              {fileName} loaded
+            </span>
+          )}
+          <span className="text-[10px] text-slate-400">PDF, DOCX, TXT, MD, HTML, CSV…</span>
+        </div>
+      )}
+      {fileErr && <p className="text-xs text-red-500 font-semibold">{fileErr}</p>}
 
       {def.options?.length > 0 && (
         <div className="grid sm:grid-cols-2 gap-3">
@@ -81,8 +142,8 @@ export default function TextTool({ def }) {
             {output.text != null && (
               <ResultBox label="Output" copyText={output.text}>
                 <pre className="text-sm text-slate-700 whitespace-pre-wrap break-words font-mono max-h-80 overflow-y-auto">{output.text}</pre>
-                <div className="mt-2 flex gap-3">
-                  <button onClick={() => downloadText(output.text, `${def.id || 'output'}.txt`)} className="text-[11px] font-bold text-slate-400 hover:text-rose-500 cursor-pointer">Download .txt</button>
+                <div className="mt-2">
+                  <DownloadBtn text={output.text} filename={`${def.id || 'output'}.txt`} label="Download .txt" variant="ghost" />
                 </div>
               </ResultBox>
             )}

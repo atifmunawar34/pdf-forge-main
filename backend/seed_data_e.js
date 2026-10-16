@@ -1,8 +1,8 @@
 // Template definitions: E-commerce, Import & Export, Healthcare, Construction,
 // Food, Travel & Events, Nonprofit
 const B = require('./seed_fields');
-const { sender, party, fields, group, signBlock, docMeta, letter, form, report, planner, table, checklist, moneyDoc, agreement } = B;
-const { text, long, num, cur, date, email, phone, sel, img, check, addr } = B;
+const { fields, group, signBlock, letter, form, report, planner, table, checklist, moneyDoc, agreement } = B;
+const { text, long, num, cur, date, email, phone, sel, check, addr } = B;
 
 const T = (slug, name, cat, doc, desc, sections, opts = {}) =>
   ({ slug, name, category: cat, docType: doc, description: desc, sections, tags: opts.tags || [], featured: !!opts.featured, disclaimer: opts.disclaimer });

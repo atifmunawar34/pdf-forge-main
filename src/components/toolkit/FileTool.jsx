@@ -1,8 +1,7 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import JSZip from 'jszip';
-import { Download } from 'lucide-react';
-import { Btn, Field, FileDrop, Input, ResultBox } from './bits';
-import { download, fmtSize } from './utils';
+import { Btn, Field, FileDrop, Input, ResultBox, DownloadBtn } from './bits';
+import { fmtSize } from './utils';
 
 const sha256 = async (buf) => {
   const h = await crypto.subtle.digest('SHA-256', buf);
@@ -204,9 +203,7 @@ export default function FileTool({ def }) {
       )}
 
       {out?.blob && (
-        <Btn onClick={() => download(out.blob, out.name)}>
-          <span className="flex items-center gap-1.5"><Download className="w-4 h-4" /> Download {out.name}</span>
-        </Btn>
+        <DownloadBtn blob={out.blob} filename={out.name} label="Download" />
       )}
     </div>
   );

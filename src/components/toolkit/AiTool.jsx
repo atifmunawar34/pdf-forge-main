@@ -1,7 +1,6 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Sparkles, Loader2 } from 'lucide-react';
-import { Btn, Field, TextArea, ResultBox } from './bits';
-import { downloadText } from './utils';
+import { Btn, Field, TextArea, ResultBox, DownloadBtn } from './bits';
 
 const API = (import.meta.env.VITE_API_BASE_URL || '') + '/api/ai';
 
@@ -67,7 +66,7 @@ export default function AiTool({ def }) {
       {out && (
         <ResultBox label="AI output" copyText={out}>
           <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed max-h-96 overflow-y-auto">{out}</p>
-          <button onClick={() => downloadText(out, `${def.id || 'ai-output'}.txt`)} className="mt-2 text-[11px] font-bold text-slate-400 hover:text-rose-500 cursor-pointer">Download .txt</button>
+          <DownloadBtn text={out} filename={`${def.id || 'ai-output'}.txt`} label="Download .txt" variant="ghost" className="mt-2" />
         </ResultBox>
       )}
     </div>

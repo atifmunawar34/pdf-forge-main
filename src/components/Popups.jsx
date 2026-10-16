@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Sparkles, AlertTriangle, FileUp, FileX2, Megaphone,
   Loader2, MessageSquareText, Wrench,

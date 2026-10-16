@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ChevronRight, Search, Star, ArrowRight } from 'lucide-react';
 import { KIT_CATEGORIES } from '../data/kit';
 import { useSeo } from './toolkit/utils';

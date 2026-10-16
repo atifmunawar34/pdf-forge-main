@@ -34,6 +34,7 @@ x grows right, y grows downward.
 import sys
 import os
 import json
+import re
 import tempfile
 
 import fitz  # PyMuPDF
@@ -54,21 +55,42 @@ def srgb(c):
 def dominant_bg(page, rect):
     """Sample the page background color under a rect via a rendered pixmap.
 
+    Only the OUTER BORDER ring of the rect is considered — glyph pixels almost
+    never reach the edges, so bold/large text can't be mistaken for background.
     Returns an (r,g,b) tuple in 0..1. Falls back to white."""
     try:
         pix = page.get_pixmap(clip=fitz.Rect(rect), matrix=fitz.Matrix(1, 1))
         n = pix.n
         data = pix.samples
+        W, H = pix.width, pix.height
+        border = max(1, round(min(W, H) * 0.18))
         counts = {}
-        step = max(1, (pix.width * pix.height) // 4000)
-        for i in range(0, pix.width * pix.height, step):
-            o = i * n
-            key = (data[o] >> 5, data[o + 1] >> 5, data[o + 2] >> 5)
-            counts[key] = counts.get(key, 0) + 1
+        sums = {}
+        step = max(1, (W * H) // 4000)
+        rows = list(range(0, min(border, H), step)) + list(range(max(0, H - border), H, step))
+        cols = list(range(0, min(border, W), step)) + list(range(max(0, W - border), W, step))
+        for py in rows:
+            for px in range(0, W, step):
+                o = (py * W + px) * n
+                key = (data[o] >> 5, data[o + 1] >> 5, data[o + 2] >> 5)
+                counts[key] = counts.get(key, 0) + 1
+                s = sums.get(key) or [0, 0, 0]
+                s[0] += data[o]; s[1] += data[o + 1]; s[2] += data[o + 2]
+                sums[key] = s
+        for px in cols:
+            for py in range(border, H - border, step):
+                o = (py * W + px) * n
+                key = (data[o] >> 5, data[o + 1] >> 5, data[o + 2] >> 5)
+                counts[key] = counts.get(key, 0) + 1
+                s = sums.get(key) or [0, 0, 0]
+                s[0] += data[o]; s[1] += data[o + 1]; s[2] += data[o + 2]
+                sums[key] = s
         if not counts:
             return (1, 1, 1)
         top = max(counts, key=counts.get)
-        return tuple(min(1.0, (v * 32 + 16) / 255) for v in top)
+        s = sums[top]
+        c = counts[top]
+        return (round(s[0] / c) / 255, round(s[1] / c) / 255, round(s[2] / c) / 255)
     except Exception:
         return (1, 1, 1)
 
@@ -93,12 +115,15 @@ def extract_font_file(doc, page, span_font_name):
     """Find the embedded font file for a span font name. Returns path or None."""
     if not span_font_name:
         return None
+    want = re.sub(r"[^a-z0-9]", "", (span_font_name or "").lower())
     for f in page.get_fonts(full=True):
         # tuple: (xref, ext, type, basefont, name, encoding, ...)
         xref, ext, basefont = f[0], f[1], f[3] or ""
         plain = basefont.split("+")[-1]
-        if span_font_name == basefont or span_font_name == plain or \
-           plain in span_font_name or span_font_name in plain:
+        base_n = re.sub(r"[^a-z0-9]", "", basefont.lower())
+        plain_n = re.sub(r"[^a-z0-9]", "", plain.lower())
+        if want and (want == base_n or want == plain_n or want in base_n
+                     or base_n in want or plain_n in want or want in plain_n):
             try:
                 _base, fext, _type, buf = doc.extract_font(xref)
                 if buf:
@@ -109,6 +134,51 @@ def extract_font_file(doc, page, span_font_name):
             except Exception:
                 return None
     return None
+
+
+def _norm_font_name(n):
+    return re.sub(r"[^a-z0-9]", "", (n or "").split("+")[-1].lower())
+
+
+_STYLE_RE = re.compile(r"bold|black|heavy|semibold|demi|italic|oblique|light|thin|regular|normal|roman|medium|bd|it|mt|ps|bld|\d+")
+
+
+def find_system_font(span_font_name, bold=False, italic=False):
+    """Locate a matching font file in the OS font directories.
+
+    Used when the embedded font is a subset missing glyphs, or when the PDF
+    references a non-embedded font. Returns a file path or None."""
+    dirs = [r"C:\Windows\Fonts", "/usr/share/fonts", "/usr/local/share/fonts",
+            "/Library/Fonts", os.path.expanduser("~/.fonts")]
+    root = next((d for d in dirs if os.path.isdir(d)), None)
+    if not root:
+        return None
+    want = _norm_font_name(span_font_name)
+    if not want:
+        return None
+    core = _STYLE_RE.sub("", want)  # e.g. "arialboldmt" -> "arial"
+    best, best_score = None, 0
+    for dirpath, _, files in os.walk(root):
+        for fn in files:
+            if not fn.lower().endswith((".ttf", ".otf", ".ttc")):
+                continue
+            stem = _norm_font_name(os.path.splitext(fn)[0])
+            stem_core = _STYLE_RE.sub("", stem)
+            if core and stem_core == core:
+                score = 4
+            elif core and len(core) >= 3 and (core in stem or (stem_core and stem_core in core)):
+                score = 2
+            elif want in stem or stem in want:
+                score = 1
+            else:
+                continue
+            s_bold = bool(re.search(r"bd|bold|black|heavy|semibold|demi|bld|bi$|b$|z$", stem))
+            s_ital = bool(re.search(r"ital|oblique|obli|bi$|i$|z$|it$", stem))
+            score += 1 if s_bold == bold else -1
+            score += 1 if s_ital == italic else -1
+            if score > best_score:
+                best, best_score = os.path.join(dirpath, fn), score
+    return best
 
 
 def builtin_font_name(span_font_name, bold=False, italic=False):
@@ -164,13 +234,47 @@ def apply_replace(doc, page, e):
         color = srgb(span[2])
 
     fontfile = extract_font_file(doc, page, span_font)
-    fontname = "F0" if fontfile else builtin_font_name(span_font)
+    if not fontfile and span and span[0] and span[0] != span_font:
+        # browser-detected name didn't match — try PyMuPDF's own span font name
+        fontfile = extract_font_file(doc, page, span[0])
+    n = " ".join(filter(None, [span_font, span[0] if span else ""])).lower()
+    bold = bool(re.search(r"bold|black|heavy|semibold|demi", n))
+    italic = bool(re.search(r"italic|oblique|slant", n))
+    base_name = span_font or (span[0] if span else "")
+    fontname = "F0" if fontfile else builtin_font_name(base_name, bold, italic)
     try:
         mfont = fitz.Font(fontfile=fontfile) if fontfile else fitz.Font(fontname)
     except Exception:
         mfont = fitz.Font("helv")
         fontfile = None
         fontname = "helv"
+
+    need_system_font = False
+    if fontfile and text.strip():
+        # Embedded fonts are usually SUBSETS containing only the glyphs the
+        # doc already used — new characters would render as blanks/boxes.
+        need_system_font = any(ord(c) > 31 and not mfont.has_glyph(ord(c)) for c in text)
+    elif not fontfile:
+        # PDF referenced a non-embedded font — the OS likely has it installed.
+        need_system_font = True
+
+    if need_system_font and text.strip():
+        sys_font = find_system_font(base_name, bold, italic)
+        if sys_font:
+            try:
+                mfont = fitz.Font(fontfile=sys_font)
+                fontfile = sys_font
+                fontname = "F0"
+            except Exception:
+                sys_font = None
+        if not sys_font:
+            fontfile = None
+            fontname = builtin_font_name(base_name, bold, italic)
+            try:
+                mfont = fitz.Font(fontname)
+            except Exception:
+                mfont = fitz.Font("helv")
+                fontname = "helv"
 
     # 2. remove original text (text-only redaction, keep images/vector art)
     #    fill with the real background color — NOT always white (dark headers!)
@@ -209,7 +313,11 @@ def apply_edit(doc, page, e):
         else:
             fill = srgb(e["bg"]) if e.get("bg") is not None else dominant_bg(page, fitz.Rect(e["rect"]))
         page.add_redact_annot(fitz.Rect(e["rect"]), fill=fill)
-        page.apply_redactions()
+        page.apply_redactions(
+            images=fitz.PDF_REDACT_IMAGE_NONE,
+            graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+            text=fitz.PDF_REDACT_TEXT_REMOVE,
+        )
         return
 
     if action == "highlight":

@@ -55,8 +55,12 @@ const resolveFontInfo = (item, page, styles) => {
   const italic = !!f?.italic || angle !== 0 || /(italic|oblique|slant)/i.test(nameFlags);
   const loaded = fontFaceLoaded(face) || fontFaceLoaded(loadedName);
 
-  // embedded FontFace first, then the real family (if installed locally), then fallback
-  const family = `"${face}", "${realFamily}", "${fallback}", sans-serif`;
+  // embedded FontFace is registered under loadedName (e.g. "g_d0_f1") — it MUST
+  // be in the list or CSS silently falls back to a system font
+  const family = [face, loadedName, realFamily, fallback]
+    .filter(Boolean)
+    .map((f) => `"${f}"`)
+    .join(', ') + ', sans-serif';
   // If the embedded FontFace is loaded, its descriptors already carry the
   // weight/style — requesting extra weight would synthesize double-bold.
   const cssWeight = loaded ? (weight || 'normal') : (bold ? 'bold' : 'normal');
@@ -90,29 +94,46 @@ const measureW = (t, fi, fsPx) => {
 };
 
 // Sample the dominant colors inside a canvas rect (device px = logical * dpr).
-// Returns { bg:[r,g,b], fg:[r,g,b] } — bg = most common pixel color (the page
-// background under the text), fg = most common color far from bg (the glyphs).
+// Returns { bg:[r,g,b], fg:[r,g,b] }.
+// bg is sampled from the OUTER BORDER ring of the rect — glyphs almost never
+// reach the edges, so bold/large text can't be mistaken for the background.
+// fg is the interior color farthest from bg (the glyphs).
 const sampleRectColors = (ctx, x, y, w, h, dpr = 1) => {
   const sx = Math.max(0, Math.round(x * dpr)), sy = Math.max(0, Math.round(y * dpr));
   const sw = Math.max(1, Math.round(w * dpr)), sh = Math.max(1, Math.round(h * dpr));
   let data;
   try { data = ctx.getImageData(sx, sy, sw, sh).data; } catch { return null; }
-  const counts = new Map(), sums = new Map();
-  const step = Math.max(4, Math.floor(data.length / 16000) * 4 || 4);
-  for (let i = 0; i + 2 < data.length; i += step) {
-    const r = data[i], g = data[i + 1], b = data[i + 2];
-    const key = `${r >> 5},${g >> 5},${b >> 5}`;
-    counts.set(key, (counts.get(key) || 0) + 1);
-    const s = sums.get(key) || [0, 0, 0];
-    s[0] += r; s[1] += g; s[2] += b; sums.set(key, s);
+  const W = sw, H = sh;
+  const border = Math.max(2, Math.round(Math.min(W, H) * 0.18));
+  const step = Math.max(1, Math.floor((W * H) / 10000));
+  const bgCounts = new Map(), bgSums = new Map();
+  const allCounts = new Map(), allSums = new Map();
+  for (let py = 0; py < H; py += step) {
+    for (let px = 0; px < W; px += step) {
+      const i = (py * W + px) * 4;
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const key = `${r >> 5},${g >> 5},${b >> 5}`;
+      allCounts.set(key, (allCounts.get(key) || 0) + 1);
+      const s = allSums.get(key) || [0, 0, 0];
+      s[0] += r; s[1] += g; s[2] += b; allSums.set(key, s);
+      if (px < border || px >= W - border || py < border || py >= H - border) {
+        bgCounts.set(key, (bgCounts.get(key) || 0) + 1);
+        const bs = bgSums.get(key) || [0, 0, 0];
+        bs[0] += r; bs[1] += g; bs[2] += b; bgSums.set(key, bs);
+      }
+    }
   }
-  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  if (!sorted.length) return null;
-  const avg = (key) => { const s = sums.get(key), c = counts.get(key); return [Math.round(s[0] / c), Math.round(s[1] / c), Math.round(s[2] / c)]; };
-  const bg = avg(sorted[0][0]);
+  const sortedAll = [...allCounts.entries()].sort((a, b) => b[1] - a[1]);
+  if (!sortedAll.length) return null;
+  const avg = (key, sums, counts) => { const s = sums.get(key), c = counts.get(key); return [Math.round(s[0] / c), Math.round(s[1] / c), Math.round(s[2] / c)]; };
+  const sortedBg = [...bgCounts.entries()].sort((a, b) => b[1] - a[1]);
+  const fromRing = sortedBg.length > 0;
+  const bgKey = fromRing ? sortedBg[0][0] : sortedAll[0][0];
+  const bg = avg(bgKey, fromRing ? bgSums : allSums, fromRing ? bgCounts : allCounts);
   let fg = null, bestDist = 90;
-  for (const [key] of sorted.slice(1)) {
-    const c = avg(key);
+  for (const [key] of sortedAll) {
+    if (key === bgKey) continue;
+    const c = avg(key, allSums, allCounts);
     const d = Math.abs(c[0] - bg[0]) + Math.abs(c[1] - bg[1]) + Math.abs(c[2] - bg[2]);
     if (d > bestDist) { bestDist = d; fg = c; }
   }
@@ -264,6 +285,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
 
   const [mode, setMode] = useState('edit'); // pointer|edit|add|redact|highlight|underline|strikeout|draw|erase
   const [pageData, setPageData] = useState({}); // pageNum -> { blocks, added, drawings, erasures, canvasW, canvasH }
+  const pageDataRef = useRef({});
   const [activeEdit, setActiveEdit] = useState(null); // { type:'block'|'add', id, page, draft }
   const [pendingAdd, setPendingAdd] = useState(null); // { vx, vy, pdfX, pdfY }
   const [addDraft, setAddDraft] = useState('');
@@ -521,13 +543,18 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   };
 
   const handleBlockClick = (e, b) => {
+    // Only intercept clicks for tools that act on blocks — in 'add'/'pointer'/
+    // 'draw' modes the click must bubble to the canvas/overlay so Add Text,
+    // drawing and deselect work even when clicking on top of existing text.
+    if (!['edit', 'highlight', 'redact', 'underline', 'strikeout', 'erase'].includes(mode)) return;
     e.stopPropagation();
     const ctx = canvasRef.current.getContext('2d');
     if (mode === 'edit') {
+      // keep any in-progress edit before opening this block
+      commitActiveEdit();
       setActiveEdit({ type: 'block', id: b.id, page: currentPage, draft: b.edited ? b.text : b.str });
       // sample the real background + text colors under the block (works on
       // dark/colored pages — whiteing out would paint a glaring white box)
-      const ctx = canvasRef.current.getContext('2d');
       if (!b.bgColor) {
         const c = sampleRectColors(ctx, b.vx - 1, b.vy - 1, b.vw + 2, Math.max(b.vh, b.vhDrawn || 0) + 2, dpr);
         if (c) { b.bgColor = c.bg; b.textColor = c.fg; }
@@ -562,6 +589,13 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     setPendingAdd(null);
   };
 
+  // commit whichever edit is open — used when the user clicks away, switches
+  // tool, or hits Save so their typed text is never silently discarded
+  const commitActiveEdit = () => {
+    if (activeEdit?.type === 'block') commitBlockEdit();
+    else if (activeEdit?.type === 'add') commitAddText();
+  };
+
   const commitBlockEdit = () => {
     if (!activeEdit || activeEdit.type !== 'block') return;
     const { id, draft } = activeEdit;
@@ -591,7 +625,9 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   };
 
   const handleCanvasClick = (e) => {
-    if (mode !== 'add') { if (mode !== 'draw' && mode !== 'erase') cancelEdit(); return; }
+    if (mode !== 'add') { if (mode !== 'draw' && mode !== 'erase') commitActiveEdit(); return; }
+    // committing an in-progress add before placing the next one
+    if (activeEdit?.type === 'add' && addDraft.trim()) commitAddText();
     const { x, y } = canvasPos(e);
     const p = toPdf(x, y);
     setPendingAdd({ vx: x, vy: y, pdfX: p.x, pdfY: p.y - fmt.fontSize * 0.8 });
@@ -695,7 +731,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     const pages = {};
     const c255 = (hex) => { const c = hexToRgb(hex); return [c.r, c.g, c.b]; };
 
-    for (const [pno, pd] of Object.entries(pageData)) {
+    for (const [pno, pd] of Object.entries(pageDataRef.current)) {
       const edits = [];
       for (const b of pd.blocks || []) {
         const bh = Math.max(b.vh, b.vhDrawn || 0);
@@ -756,7 +792,10 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   };
 
   const handleSave = async () => {
+    // keep any in-progress edit, then let state flush before building the payload
+    commitActiveEdit();
     setSaving(true);
+    await new Promise((r) => setTimeout(r, 60));
     try {
       const fd = new FormData();
       fd.append('file', file);
@@ -799,7 +838,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
 
     const pages = doc.getPages();
 
-    for (const [pageNumStr, pd] of Object.entries(pageData)) {
+    for (const [pageNumStr, pd] of Object.entries(pageDataRef.current)) {
       const pageNum = parseInt(pageNumStr, 10);
       const page = pages[pageNum - 1];
       if (!page) continue;
@@ -917,6 +956,9 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   // ---------- effects ----------
   const firstScale = useRef(true);
 
+  // keep a live ref so save can read edits committed in the same tick
+  useEffect(() => { pageDataRef.current = pageData; }, [pageData]);
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { const t = setTimeout(loadPdf, 0); return () => clearTimeout(t); }, [file]);
 
@@ -951,7 +993,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   const toolBtn = (id, Icon, label) => (
     <button
       key={id}
-      onClick={() => { cancelEdit(); setMode(id); }}
+      onClick={() => { commitActiveEdit(); setMode(id); }}
       className={`flex flex-col items-center justify-center px-2.5 py-1.5 rounded-md transition cursor-pointer min-w-[52px] ${
         mode === id ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'
       }`}
@@ -1008,57 +1050,21 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
         <div className="flex-1" />
 
         <div className="flex items-center space-x-1 pl-2 border-l border-slate-200">
-          <button onClick={() => setScale(s => Math.max(0.5, s - 0.15))} className="p-1.5 hover:bg-slate-100 rounded-lg cursor-pointer"><ZoomOut className="w-4 h-4" /></button>
+          <button onClick={() => { commitActiveEdit(); setScale(s => Math.max(0.5, s - 0.15)); }} className="p-1.5 hover:bg-slate-100 rounded-lg cursor-pointer"><ZoomOut className="w-4 h-4" /></button>
           <span className="text-[11px] font-bold text-slate-600 w-11 text-center">{Math.round(scale * 100)}%</span>
-          <button onClick={() => setScale(s => Math.min(3, s + 0.15))} className="p-1.5 hover:bg-slate-100 rounded-lg cursor-pointer"><ZoomIn className="w-4 h-4" /></button>
+          <button onClick={() => { commitActiveEdit(); setScale(s => Math.min(3, s + 0.15)); }} className="p-1.5 hover:bg-slate-100 rounded-lg cursor-pointer"><ZoomIn className="w-4 h-4" /></button>
           <div className="h-5 w-px bg-slate-300 mx-1" />
-          <button onClick={() => renderPage(currentPage - 1)} disabled={currentPage <= 1} className="p-1.5 hover:bg-slate-100 rounded-lg disabled:opacity-40 cursor-pointer"><ChevronLeft className="w-4 h-4" /></button>
+          <button onClick={() => { commitActiveEdit(); renderPage(currentPage - 1); }} disabled={currentPage <= 1} className="p-1.5 hover:bg-slate-100 rounded-lg disabled:opacity-40 cursor-pointer"><ChevronLeft className="w-4 h-4" /></button>
           <span className="text-[11px] font-bold text-slate-600 whitespace-nowrap">{currentPage} / {totalPages}</span>
-          <button onClick={() => renderPage(currentPage + 1)} disabled={currentPage >= totalPages} className="p-1.5 hover:bg-slate-100 rounded-lg disabled:opacity-40 cursor-pointer"><ChevronRight className="w-4 h-4" /></button>
+          <button onClick={() => { commitActiveEdit(); renderPage(currentPage + 1); }} disabled={currentPage >= totalPages} className="p-1.5 hover:bg-slate-100 rounded-lg disabled:opacity-40 cursor-pointer"><ChevronRight className="w-4 h-4" /></button>
         </div>
       </div>
 
-      {/* Formatting mini-toolbar (visible when editing) */}
-      {activeEdit && (
-        <div className="bg-white border-b border-slate-200 px-4 py-1.5 flex items-center space-x-3 shrink-0 shadow-sm text-xs">
-          {activeEdit.type === 'add' ? (
-            <>
-              <select
-                value={fmt.family}
-                onChange={(e) => setFmt(f => ({ ...f, family: e.target.value }))}
-                className="px-2 py-1 border border-slate-300 rounded font-medium"
-              >
-                <option>Helvetica</option>
-                <option>Times New Roman</option>
-                <option>Courier New</option>
-              </select>
-              <input
-                type="number" min={6} max={96} value={fmt.fontSize}
-                onChange={(e) => setFmt(f => ({ ...f, fontSize: parseInt(e.target.value) || 12 }))}
-                className="w-14 px-2 py-1 border border-slate-300 rounded text-center font-medium"
-              />
-              <button onClick={() => setFmt(f => ({ ...f, bold: !f.bold }))} className={`p-1.5 rounded cursor-pointer ${fmt.bold ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`}><Bold className="w-3.5 h-3.5" /></button>
-              <button onClick={() => setFmt(f => ({ ...f, italic: !f.italic }))} className={`p-1.5 rounded cursor-pointer ${fmt.italic ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`}><Italic className="w-3.5 h-3.5" /></button>
-              <button onClick={() => setFmt(f => ({ ...f, underline: !f.underline }))} className={`p-1.5 rounded cursor-pointer ${fmt.underline ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`}><Underline className="w-3.5 h-3.5" /></button>
-            </>
-          ) : (
-            <span className="text-slate-500 font-medium">
-              Font: <span className="text-slate-800 font-bold">{activeBlock?.font?.realName || 'embedded'}</span>
-              {activeBlock?.font?.bold && <span className="ml-1.5 px-1 py-0.5 bg-slate-800 text-white rounded text-[9px]">BOLD</span>}
-              {activeBlock?.font?.italic && <span className="ml-1 px-1 py-0.5 bg-slate-800 text-white rounded text-[9px]">ITALIC</span>}
-            </span>
-          )}
-          <input type="color" value={fmt.color} onChange={(e) => setFmt(f => ({ ...f, color: e.target.value, colorTouched: true }))} className="w-7 h-7 rounded border border-slate-300 cursor-pointer" title="Text color" />
-          <div className="h-5 w-px bg-slate-300" />
-          <button onClick={activeEdit.type === 'add' ? commitAddText : commitBlockEdit} className="px-3 py-1 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded cursor-pointer">OK</button>
-          <button onClick={cancelEdit} className="px-3 py-1 border border-slate-300 hover:bg-slate-100 font-bold rounded cursor-pointer">Cancel</button>
-        </div>
-      )}
-
       {/* Main area: canvas + thumbnail sidebar */}
       <div className="flex-1 min-h-0 flex">
-        <div ref={scrollRef} className="flex-1 overflow-auto p-6 flex items-start justify-center">
-          <div className="relative bg-white shadow-xl">
+        <div className="relative flex-1 min-h-0">
+          <div ref={scrollRef} className="h-full overflow-auto p-6 flex items-start justify-center">
+            <div className="relative bg-white shadow-xl">
             {isRendering && (
               <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/70">
                 <Loader2 className="w-8 h-8 animate-spin text-rose-600" />
@@ -1096,7 +1102,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
                     style={{
                       left: b.vx, top: b.vy, width: b.vw,
                       height: Math.max(b.vh, b.vhDrawn || 0),
-                      pointerEvents: 'auto',
+                      pointerEvents: ['edit', 'highlight', 'redact', 'underline', 'strikeout', 'erase'].includes(mode) ? 'auto' : 'none',
                     }}
                   />
                 );
@@ -1117,7 +1123,10 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
                   spellCheck={false}
                   value={activeEdit.draft}
                   onChange={(e) => setActiveEdit(a => ({ ...a, draft: e.target.value }))}
-                  onKeyDown={(e) => { if (e.key === 'Escape') cancelEdit(); }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') cancelEdit();
+                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) commitBlockEdit();
+                  }}
                   className="absolute z-30 border-2 border-rose-500 rounded-sm px-0.5 py-0 outline-none resize-none overflow-hidden"
                   style={{
                     left: activeBlock.vx, top: activeBlock.vy,
@@ -1161,6 +1170,44 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
               )}
             </div>
           </div>
+          </div>
+
+          {/* Floating formatting bar — overlays the canvas, never shifts layout */}
+          {activeEdit && (
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 bg-white/95 backdrop-blur border border-slate-200 rounded-xl shadow-lg px-3 py-1.5 flex items-center space-x-3 text-xs whitespace-nowrap">
+              {activeEdit.type === 'add' ? (
+                <>
+                  <select
+                    value={fmt.family}
+                    onChange={(e) => setFmt(f => ({ ...f, family: e.target.value }))}
+                    className="px-2 py-1 border border-slate-300 rounded font-medium"
+                  >
+                    <option>Helvetica</option>
+                    <option>Times New Roman</option>
+                    <option>Courier New</option>
+                  </select>
+                  <input
+                    type="number" min={6} max={96} value={fmt.fontSize}
+                    onChange={(e) => setFmt(f => ({ ...f, fontSize: parseInt(e.target.value) || 12 }))}
+                    className="w-14 px-2 py-1 border border-slate-300 rounded text-center font-medium"
+                  />
+                  <button onClick={() => setFmt(f => ({ ...f, bold: !f.bold }))} className={`p-1.5 rounded cursor-pointer ${fmt.bold ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`}><Bold className="w-3.5 h-3.5" /></button>
+                  <button onClick={() => setFmt(f => ({ ...f, italic: !f.italic }))} className={`p-1.5 rounded cursor-pointer ${fmt.italic ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`}><Italic className="w-3.5 h-3.5" /></button>
+                  <button onClick={() => setFmt(f => ({ ...f, underline: !f.underline }))} className={`p-1.5 rounded cursor-pointer ${fmt.underline ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`}><Underline className="w-3.5 h-3.5" /></button>
+                </>
+              ) : (
+                <span className="text-slate-500 font-medium" title={activeBlock?.font?.realName || ''}>
+                  Font: <span className="text-slate-800 font-bold">{((activeBlock?.font?.realName || 'embedded').split('+').pop()).slice(0, 22)}</span>
+                  {activeBlock?.font?.bold && <span className="ml-1.5 px-1 py-0.5 bg-slate-800 text-white rounded text-[9px]">BOLD</span>}
+                  {activeBlock?.font?.italic && <span className="ml-1 px-1 py-0.5 bg-slate-800 text-white rounded text-[9px]">ITALIC</span>}
+                </span>
+              )}
+              <input type="color" value={fmt.color} onChange={(e) => setFmt(f => ({ ...f, color: e.target.value, colorTouched: true }))} className="w-7 h-7 rounded border border-slate-300 cursor-pointer" title="Text color" />
+              <div className="h-5 w-px bg-slate-300" />
+              <button onClick={activeEdit.type === 'add' ? commitAddText : commitBlockEdit} title="Apply (or just click anywhere)" className="px-3 py-1 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded cursor-pointer">OK</button>
+              <button onClick={cancelEdit} title="Discard changes (Esc)" className="px-3 py-1 border border-slate-300 hover:bg-slate-100 font-bold rounded cursor-pointer">Cancel</button>
+            </div>
+          )}
         </div>
 
         {/* Right sidebar: page thumbnails (pdfsimpli style) */}
@@ -1168,7 +1215,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
           {Array.from({ length: totalPages }, (_, i) => i + 1).map(n => (
             <button
               key={n}
-              onClick={() => renderPage(n)}
+              onClick={() => { commitActiveEdit(); renderPage(n); }}
               className={`relative rounded border-2 transition cursor-pointer overflow-hidden bg-white ${
                 currentPage === n ? 'border-orange-500 shadow-md' : 'border-slate-300 hover:border-slate-400'
               }`}

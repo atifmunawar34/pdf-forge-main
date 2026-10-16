@@ -1,7 +1,7 @@
 // Template definitions: Sales & Invoicing, Freelancers, HR
 const B = require('./seed_fields');
-const { sender, party, fields, group, signBlock, docMeta, letter, form, report, planner, table, moneyDoc, notesTerms, moneyItems, agreement } = B;
-const { text, long, num, cur, date, email, phone, sel, img, check, addr } = B;
+const { sender, party, fields, group, signBlock, letter, form, report, table, moneyDoc, agreement } = B;
+const { text, long, num, cur, date, email, phone, sel, addr } = B;
 
 const T = (slug, name, cat, doc, desc, sections, opts = {}) =>
   ({ slug, name, category: cat, docType: doc, description: desc, sections, tags: opts.tags || [], featured: !!opts.featured, disclaimer: opts.disclaimer });

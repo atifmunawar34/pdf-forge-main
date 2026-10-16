@@ -1,6 +1,6 @@
 // Template definitions: Modern designer layouts (sidebar CVs, modern invoice)
 const B = require('./seed_fields');
-const { fields, group, text, long, num, cur, date, email, phone, sel, img, addr, moneyDoc, cvSidebar, letter } = B;
+const { text, date, moneyDoc, cvSidebar, letter } = B;
 
 const T = (slug, name, cat, doc, desc, sections, opts = {}) =>
   ({

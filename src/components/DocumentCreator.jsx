@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import {
   Plus, Trash2, ArrowUp, ArrowDown, Type, Heading1, Minus, ImagePlus,

@@ -1,5 +1,6 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { Copy, Check, UploadCloud } from 'lucide-react';
+import { useEffect, useState, useRef } from 'react';
+import { Copy, Check, UploadCloud, Download } from 'lucide-react';
+import { download, fmtSize } from './utils';
 
 /* Shared UI primitives for the toolkit engines (components only — helpers live in utils.js) */
 
@@ -71,6 +72,46 @@ export const CopyBtn = ({ text }) => {
       {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
       {copied ? 'Copied!' : 'Copy'}
     </button>
+  );
+};
+
+/**
+ * Download button with an editable file name — users can rename the output
+ * before saving; the original extension is always preserved. Accepts a Blob,
+ * a data/object URL, or raw text.
+ */
+export const DownloadBtn = ({ blob, url, text, filename, label = 'Download', variant = 'primary', mime = 'text/plain', className = '' }) => {
+  const ext = filename?.includes('.') ? filename.split('.').pop() : '';
+  const [name, setName] = useState(() => (filename || 'file').replace(/\.[^/.]+$/, ''));
+  const finalName = `${name.trim() || 'file'}${ext ? `.${ext}` : ''}`;
+  const size = blob?.size ?? (text != null ? new TextEncoder().encode(text).length : null);
+  const doDownload = () => {
+    if (blob) download(blob, finalName);
+    else if (text != null) download(new Blob([text], { type: mime }), finalName);
+    else if (url) {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = finalName;
+      a.click();
+    }
+  };
+  return (
+    <div className={`flex items-center gap-2 ${className}`}>
+      <div className="flex items-center flex-1 min-w-0 max-w-xs bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 focus-within:border-rose-400 focus-within:ring-2 focus-within:ring-rose-500/15 transition">
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          aria-label="File name"
+          className="flex-1 min-w-0 text-xs font-semibold text-slate-700 outline-none bg-transparent"
+        />
+        {ext && <span className="text-xs font-bold text-slate-400">.{ext}</span>}
+      </div>
+      {size != null && <span className="text-[10px] font-semibold text-slate-400 shrink-0">{fmtSize(size)}</span>}
+      <Btn onClick={doDownload} variant={variant} className="shrink-0">
+        <span className="flex items-center gap-1.5"><Download className="w-4 h-4" /> {label}</span>
+      </Btn>
+    </div>
   );
 };
 

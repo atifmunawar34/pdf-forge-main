@@ -1,7 +1,6 @@
-import React, { useRef, useState } from 'react';
-import { Download } from 'lucide-react';
-import { Btn, Field, FileDrop, Input, NumInput, Select, ResultBox, CopyBtn } from './bits';
-import { download, downloadText, fmtSize } from './utils';
+import { useRef, useState } from 'react';
+import { Btn, Field, FileDrop, Input, NumInput, Select, ResultBox, CopyBtn, DownloadBtn } from './bits';
+import { fmtSize } from './utils';
 
 const loadImg = (file) =>
   new Promise((res, rej) => {
@@ -379,16 +378,18 @@ export default function ImageTool({ def }) {
       {out?.text && (
         <ResultBox label="Base64 output" copyText={out.text}>
           <p className="font-mono text-[11px] text-slate-500 break-all max-h-32 overflow-y-auto">{out.text.slice(0, 500)}…</p>
-          <button onClick={() => downloadText(out.text, 'image.txt')} className="mt-2 text-[11px] font-bold text-slate-400 hover:text-rose-500 cursor-pointer">Download .txt</button>
+          <DownloadBtn text={out.text} filename="image.txt" label="Download .txt" variant="ghost" className="mt-2" />
         </ResultBox>
       )}
 
       {out?.dataUrl && (
         <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-center space-y-3">
           <img src={out.dataUrl} alt="Result" className="max-h-80 mx-auto rounded-xl shadow-sm" />
-          <Btn onClick={() => download(out.blob, out.zipName || `${def.id || 'image'}.${(opts.format || 'png')}`)}>
-            <span className="flex items-center gap-1.5"><Download className="w-4 h-4" /> Download</span>
-          </Btn>
+          <DownloadBtn
+            blob={out.blob}
+            filename={out.zipName || `${def.id || 'image'}.${opts.format || 'png'}`}
+            className="justify-center"
+          />
         </div>
       )}
     </div>

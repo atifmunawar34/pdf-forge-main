@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Btn, CopyBtn, Field, Input, NumInput, ResultBox } from './bits';
 
 import { hexToRgb, rgbToHex, rgbToHsl, hslToRgb, contrastRatio } from './colorMath';

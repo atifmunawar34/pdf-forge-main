@@ -1,7 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
-import { Btn, Field, Input, NumInput, Select, ResultBox, CopyBtn } from './bits';
-import { downloadText } from './utils';
+import { Btn, Field, Input, NumInput, Select, ResultBox, CopyBtn, DownloadBtn } from './bits';
 
 /**
  * Generator engine. def = {
@@ -57,9 +56,7 @@ export default function GenerateTool({ def }) {
               </li>
             ))}
           </ul>
-          <button onClick={() => downloadText(items.join('\n'), `${def.id || 'generated'}.txt`)} className="mt-2 text-[11px] font-bold text-slate-400 hover:text-rose-500 cursor-pointer">
-            Download .txt
-          </button>
+          <DownloadBtn text={items.join('\n')} filename={`${def.id || 'generated'}.txt`} label="Download .txt" variant="ghost" className="mt-2" />
         </ResultBox>
       )}
     </div>

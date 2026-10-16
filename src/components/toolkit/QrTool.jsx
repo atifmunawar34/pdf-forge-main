@@ -1,9 +1,9 @@
-import React, { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import JsBarcode from 'jsbarcode';
 import jsQR from 'jsqr';
-import { Download, ScanLine } from 'lucide-react';
-import { Btn, Field, Input, NumInput, ResultBox, FileDrop } from './bits';
+import { ScanLine } from 'lucide-react';
+import { Btn, Field, Input, NumInput, ResultBox, FileDrop, DownloadBtn } from './bits';
 
 /**
  * QR / barcode engine.
@@ -130,14 +130,7 @@ export default function QrTool({ def }) {
       {out && (
         <div className="flex flex-col items-center gap-3 bg-slate-50 border border-slate-200 rounded-2xl p-6">
           <img src={out} alt={isBarcode ? 'Barcode' : 'QR code'} className="max-w-full rounded-lg shadow-sm bg-white p-2" />
-          <Btn variant="secondary" onClick={() => {
-            const a = document.createElement('a');
-            a.href = out;
-            a.download = `${def.id || 'code'}.png`;
-            a.click();
-          }}>
-            <span className="flex items-center gap-1.5"><Download className="w-4 h-4" /> Download PNG</span>
-          </Btn>
+          <DownloadBtn url={out} filename={`${def.id || 'code'}.png`} label="Download PNG" variant="secondary" />
         </div>
       )}
       <canvas ref={canvasRef} className="hidden" />

@@ -1,9 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Sparkles, Send, Paperclip, Copy, Check, Plus, Trash2,
   ArrowRight, Loader2, X, FileText, Wrench,
 } from 'lucide-react';
-import { ENGINES } from './ToolPage';
+import { ENGINES } from './toolkit/engines';
 import { planRequest, buildBrief, acknowledge, normField, fieldOptions } from '../utils/aiEngine';
 import { TOOL_FORMATS } from '../data/popupConfig';
 import { useLocal, useSeo, downloadText } from './toolkit/utils';
@@ -130,7 +130,7 @@ export default function AssistantPage({ onOpenPdfTool, onOpenTemplates, onOpenCr
       if (data.offline) return "The cloud AI provider isn't configured on this server, so general questions are unavailable right now. However, **all 250+ platform tools work through me directly** — for example:\n\n• \"Merge these PDFs and compress them\"\n• \"Make a QR code for mysite.com\"\n• \"15% discount + 18% tax on $2,400\"\n• \"Resize this image to 1200px\"\n• \"I need a website\" — and I'll collect the requirements for our team";
       return 'The AI service is temporarily unavailable — please resend your message, or describe a task and I\'ll run it with our tools instead.';
     } catch {
-      return 'I couldn\'t reach the AI service. All platform tools still work through me — describe what you need (for example, \"compress this PDF\" or \"create an invoice\") and I\'ll handle it directly.';
+      return 'I couldn\'t reach the AI service. All platform tools still work through me — describe what you need (for example, "compress this PDF" or "create an invoice") and I\'ll handle it directly.';
     }
   };
 

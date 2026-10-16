@@ -41,13 +41,13 @@ const T = (id, name, desc, def, extra = {}) => ({
 });
 
 export const DOC_TOOLS = [
-  T('word-counter', 'Word Counter', 'Count words, characters, sentences and paragraphs in any text instantly.', { run: (t) => stats(t), action: 'Count' }, { featured: true, popular: true }),
+  T('word-counter', 'Word Counter', 'Count words, characters, sentences and paragraphs in any text instantly.', { run: (t) => stats(t), action: 'Count', acceptFile: true }, { featured: true, popular: true }),
   T('character-counter', 'Character Counter', 'Count characters with and without spaces — ideal for tweets and meta text.', {
     run: (t) => ({ stats: [{ label: 'Characters', value: t.length }, { label: 'No spaces', value: t.replace(/\s/g, '').length }, { label: 'Words', value: words(t) }] }),
-    action: 'Count',
+    action: 'Count', acceptFile: true,
   }, { popular: true }),
-  T('sentence-counter', 'Sentence Counter', 'Count how many sentences are in your text.', { run: (t) => ({ stats: [{ label: 'Sentences', value: sentences(t) }, { label: 'Words', value: words(t) }] }), action: 'Count' }),
-  T('paragraph-counter', 'Paragraph Counter', 'Count paragraphs in pasted text instantly.', { run: (t) => ({ stats: [{ label: 'Paragraphs', value: paragraphs(t) }, { label: 'Words', value: words(t) }] }), action: 'Count' }),
+  T('sentence-counter', 'Sentence Counter', 'Count how many sentences are in your text.', { run: (t) => ({ stats: [{ label: 'Sentences', value: sentences(t) }, { label: 'Words', value: words(t) }] }), action: 'Count', acceptFile: true }),
+  T('paragraph-counter', 'Paragraph Counter', 'Count paragraphs in pasted text instantly.', { run: (t) => ({ stats: [{ label: 'Paragraphs', value: paragraphs(t) }, { label: 'Words', value: words(t) }] }), action: 'Count', acceptFile: true }),
   T('case-converter', 'Case Converter', 'Convert text between UPPERCASE, lowercase, Title Case and Sentence case.', {
     options: [{ key: 'mode', label: 'Convert to', type: 'select', options: [
       { value: 'upper', label: 'UPPERCASE' }, { value: 'lower', label: 'lowercase' },

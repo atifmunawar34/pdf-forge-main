@@ -1,7 +1,6 @@
-import React, { useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { Mic, Square, Volume2, StopCircle } from 'lucide-react';
-import { Btn, Field, Select, TextArea, ResultBox } from './bits';
-import { downloadText } from './utils';
+import { Btn, Field, Select, TextArea, ResultBox, DownloadBtn } from './bits';
 
 /** Speech tools — def.mode: 'stt' (speech→text) | 'tts' (text→speech) */
 export default function SpeechTool({ def }) {
@@ -85,7 +84,7 @@ export default function SpeechTool({ def }) {
       {text && (
         <ResultBox label="Transcript" copyText={text}>
           <p className="text-sm text-slate-700 whitespace-pre-wrap">{text}</p>
-          <button onClick={() => downloadText(text, 'transcript.txt')} className="mt-2 text-[11px] font-bold text-slate-400 hover:text-rose-500 cursor-pointer">Download .txt</button>
+          <DownloadBtn text={text} filename="transcript.txt" label="Download .txt" variant="ghost" className="mt-2" />
         </ResultBox>
       )}
     </div>

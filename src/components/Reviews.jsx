@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Star, ChevronLeft, ChevronRight, Quote } from 'lucide-react';
 
 const REVIEWS = [
@@ -68,7 +68,7 @@ export default function Reviews() {
   const review = REVIEWS[currentIndex];
 
   return (
-    <section className="py-16 bg-gradient-to-b from-slate-50 to-slate-100/80 border-t border-slate-200/80">
+    <section className="py-10 bg-gradient-to-b from-slate-50 to-slate-100/80 border-t border-slate-200/80">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
         <h2 className="text-xs font-bold uppercase tracking-widest text-rose-500 mb-2">Loved by Users Worldwide</h2>
         <h3 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
@@ -76,7 +76,7 @@ export default function Reviews() {
         </h3>
 
         {/* Carousel Card */}
-        <div className="mt-8 relative bg-white rounded-3xl p-8 sm:p-10 shadow-lg border border-slate-200/70 transition-all">
+        <div className="mt-6 relative bg-white rounded-3xl p-8 sm:p-10 shadow-lg border border-slate-200/70 transition-all">
           <Quote className="w-10 h-10 text-rose-100 absolute top-6 left-6 -z-0" />
 
           <div className="relative z-10 flex flex-col items-center">

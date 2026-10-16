@@ -8,6 +8,52 @@ const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
 
+const PYTHON_COMMANDS = process.platform === 'win32' ? ['python', 'py', 'python3'] : ['python3', 'python'];
+
+function runPython(args) {
+  return new Promise((resolve, reject) => {
+    const tryNext = (index, lastError) => {
+      if (index >= PYTHON_COMMANDS.length) {
+        reject(lastError || new Error('Python 3 is not installed.'));
+        return;
+      }
+
+      const cmd = PYTHON_COMMANDS[index];
+      const py = spawn(cmd, args, { windowsHide: true });
+      let stderr = '';
+
+      py.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      py.on('error', (err) => {
+        tryNext(index + 1, err);
+      });
+
+      py.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+
+        const missingPython =
+          code === 9009 ||
+          /python was not found/i.test(stderr) ||
+          /is not recognized/i.test(stderr);
+
+        if (missingPython) {
+          tryNext(index + 1, new Error(`${cmd} failed with code ${code}: ${stderr}`));
+          return;
+        }
+
+        reject(new Error(`${cmd} failed with code ${code}: ${stderr}`));
+      });
+    };
+
+    tryNext(0);
+  });
+}
+
 const libreConvert = util.promisify(libre.convert);
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -25,12 +71,35 @@ app.use(cors({
 
 app.use(express.json());
 
-// Universal 1:1 Word to PDF conversion engine for arbitrary document layouts
+// Office/HTML to PDF via the PyMuPDF Story engine (office_to_pdf.py) — no LibreOffice needed
+async function convertViaPython(fileBuffer, ext) {
+  const tempId = `conv_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const tempDir = path.join(os.tmpdir(), tempId);
+  const inputPath = path.join(tempDir, `input${ext}`);
+  const outputPath = path.join(tempDir, 'output.pdf');
+
+  await fs.mkdir(tempDir, { recursive: true });
+  await fs.writeFile(inputPath, fileBuffer);
+  try {
+    await runPython([path.join(__dirname, 'office_to_pdf.py'), inputPath, outputPath]);
+    return await fs.readFile(outputPath);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// Word to PDF conversion engine
 async function convertDocxToPdf(fileBuffer, originalFilename) {
+  const ext = path.extname(originalFilename).toLowerCase() === '.doc' ? '.docx' : path.extname(originalFilename).toLowerCase() || '.docx';
+  return convertViaPython(fileBuffer, ext === '.doc' ? '.docx' : ext);
+}
+
+// Ghostscript-based legacy converter (kept for reference — superseded by convertViaPython)
+async function _convertDocxToPdfLegacy(fileBuffer, originalFilename) {
   const tempId = `docx_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
   const tempDir = os.tmpdir();
   const inputPath = path.join(tempDir, `${tempId}_${originalFilename}`);
-  const rawPdfPath = path.join(tempDir, `${tempId}_raw.pdf`);
+  const _rawPdfPath = path.join(tempDir, `${tempId}_raw.pdf`);
   const finalPdfPath = path.join(tempDir, `${tempId}_final.pdf`);
   const userProfileDir = path.join(tempDir, `lo_profile_${tempId}`);
 
@@ -210,7 +279,8 @@ app.post('/api/convert/powerpoint-to-pdf', upload.single('file'), async (req, re
       }
     }
 
-    const pdfBuffer = await libreConvert(buffer, '.pdf', undefined);
+    const ext = path.extname(req.file.originalname).toLowerCase() === '.ppt' ? '.pptx' : path.extname(req.file.originalname).toLowerCase() || '.pptx';
+    const pdfBuffer = await convertViaPython(buffer, ext);
     const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
 
     res.setHeader('Content-Type', 'application/pdf');
@@ -218,7 +288,7 @@ app.post('/api/convert/powerpoint-to-pdf', upload.single('file'), async (req, re
     return res.send(pdfBuffer);
   } catch (error) {
     console.error('PowerPoint conversion failed:', error);
-    return res.status(500).json({ error: 'Failed to convert presentation with LibreOffice.' });
+    return res.status(500).json({ error: 'Failed to convert presentation to PDF.' });
   }
 });
 
@@ -234,7 +304,7 @@ app.post('/api/convert/html-to-pdf', upload.single('file'), async (req, res) => 
       return res.status(400).json({ error: 'No HTML file or content provided.' });
     }
 
-    const pdfBuffer = await libreConvert(htmlBuffer, '.pdf', undefined);
+    const pdfBuffer = await convertViaPython(htmlBuffer, '.html');
     const originalName = req.file
       ? req.file.originalname.replace(/\.[^/.]+$/, '')
       : 'rendered_html';
@@ -244,7 +314,7 @@ app.post('/api/convert/html-to-pdf', upload.single('file'), async (req, res) => 
     return res.send(pdfBuffer);
   } catch (error) {
     console.error('HTML conversion failed:', error);
-    return res.status(500).json({ error: 'Failed to convert HTML to PDF with LibreOffice.' });
+    return res.status(500).json({ error: 'Failed to convert HTML to PDF.' });
   }
 });
 
@@ -273,7 +343,8 @@ app.post('/api/convert/excel-to-pdf', upload.single('file'), async (req, res) =>
       }
     }
 
-    const pdfBuffer = await libreConvert(buffer, '.pdf', undefined);
+    const ext = path.extname(req.file.originalname).toLowerCase() === '.xls' ? '.xlsx' : path.extname(req.file.originalname).toLowerCase() || '.xlsx';
+    const pdfBuffer = await convertViaPython(buffer, ext);
     const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
 
     res.setHeader('Content-Type', 'application/pdf');
@@ -281,62 +352,30 @@ app.post('/api/convert/excel-to-pdf', upload.single('file'), async (req, res) =>
     return res.send(pdfBuffer);
   } catch (error) {
     console.error('Excel conversion error:', error);
-    return res.status(500).json({ error: 'Failed to convert Excel spreadsheet with LibreOffice.' });
+    return res.status(500).json({ error: 'Failed to convert Excel spreadsheet to PDF.' });
   }
 });
 
-// Ghostscript PDF Compression Function
-async function compressWithGhostscript(inputBuffer, qualityLevel = 45) {
+// PDF compression via PyMuPDF + Pillow (compress_pdf.py) — no Ghostscript needed
+async function compressWithEngine(inputBuffer, qualityLevel = 45) {
   const tempId = `compress_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-  const tempDir = os.tmpdir();
-  const inputPath = path.join(tempDir, `${tempId}_in.pdf`);
-  const outputPath = path.join(tempDir, `${tempId}_out.pdf`);
+  const tempDir = path.join(os.tmpdir(), tempId);
+  const inputPath = path.join(tempDir, 'input.pdf');
+  const outputPath = path.join(tempDir, 'output.pdf');
 
+  await fs.mkdir(tempDir, { recursive: true });
   await fs.writeFile(inputPath, inputBuffer);
-
-  // Map compression percentage slider to Ghostscript PDF settings
-  let pdfSetting = '/ebook'; // Balanced (150 DPI)
-  if (qualityLevel <= 30) {
-    pdfSetting = '/printer'; // High quality (300 DPI)
-  } else if (qualityLevel >= 65) {
-    pdfSetting = '/screen'; // Maximum compression (72 DPI)
+  try {
+    await runPython([
+      path.join(__dirname, 'compress_pdf.py'),
+      inputPath,
+      outputPath,
+      String(qualityLevel),
+    ]);
+    return await fs.readFile(outputPath);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
-
-  const gsArgs = [
-    '-sDEVICE=pdfwrite',
-    '-dCompatibilityLevel=1.4',
-    `-dPDFSETTINGS=${pdfSetting}`,
-    '-dNOPAUSE',
-    '-dQUIET',
-    '-dBATCH',
-    `-sOutputFile=${outputPath}`,
-    inputPath,
-  ];
-
-  return new Promise((resolve, reject) => {
-    const gs = spawn('gs', gsArgs);
-
-    gs.on('close', async (code) => {
-      try {
-        if (code === 0) {
-          const compressedBuffer = await fs.readFile(outputPath);
-          resolve(compressedBuffer);
-        } else {
-          reject(new Error(`Ghostscript exited with code ${code}`));
-        }
-      } catch (err) {
-        reject(err);
-      } finally {
-        // Cleanup temp files immediately
-        await fs.unlink(inputPath).catch(() => {});
-        await fs.unlink(outputPath).catch(() => {});
-      }
-    });
-
-    gs.on('error', (err) => {
-      reject(err);
-    });
-  });
 }
 
 // 5. Compress PDF Endpoint
@@ -349,7 +388,7 @@ app.post('/api/compress-pdf', upload.single('file'), async (req, res) => {
     const compressionPercent = parseInt(req.body.compressionPercent || '45', 10);
     const originalSize = req.file.buffer.length;
 
-    const compressedBuffer = await compressWithGhostscript(req.file.buffer, compressionPercent);
+    const compressedBuffer = await compressWithEngine(req.file.buffer, compressionPercent);
 
     // Fallback if the file is already maximally compressed
     const finalBuffer = compressedBuffer.length < originalSize ? compressedBuffer : req.file.buffer;
@@ -362,7 +401,7 @@ app.post('/api/compress-pdf', upload.single('file'), async (req, res) => {
 
     return res.send(finalBuffer);
   } catch (error) {
-    console.error('Ghostscript compression error:', error);
+    console.error('PDF compression error:', error);
     return res.status(500).json({ error: 'Failed to compress PDF.' });
   }
 });
@@ -383,24 +422,7 @@ app.post('/api/convert/pdf-to-word', upload.single('file'), async (req, res) => 
     await fs.mkdir(tempDir, { recursive: true });
     await fs.writeFile(inputPdfPath, req.file.buffer);
 
-    await new Promise((resolve, reject) => {
-      const py = spawn('python3', [pythonScriptPath, inputPdfPath, outputDocxPath]);
-
-      let stderr = '';
-      py.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      py.on('close', (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new Error(`pdf2docx failed with code ${code}: ${stderr}`));
-        }
-      });
-
-      py.on('error', (err) => reject(err));
-    });
+    await runPython([pythonScriptPath, inputPdfPath, outputDocxPath]);
 
     const docxBuffer = await fs.readFile(outputDocxPath);
     const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
@@ -434,37 +456,12 @@ app.post('/api/convert/pdf-to-powerpoint', upload.single('file'), async (req, re
     await fs.mkdir(tempDir, { recursive: true });
     await fs.writeFile(inputPdfPath, req.file.buffer);
 
-    // Run LibreOffice with impress_pdf_import filter
-    await new Promise((resolve, reject) => {
-      const lo = spawn('libreoffice', [
-        '--headless',
-        '--invisible',
-        '--nocrashreport',
-        '--nodefault',
-        '--nofirststartwizard',
-        '--infilter=impress_pdf_import',
-        '--convert-to',
-        'pptx',
-        '--outdir',
-        tempDir,
-        inputPdfPath,
-      ]);
-
-      let stderr = '';
-      lo.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      lo.on('close', (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new Error(`LibreOffice exited with code ${code}. Error: ${stderr}`));
-        }
-      });
-
-      lo.on('error', (err) => reject(err));
-    });
+    // PyMuPDF page render + python-pptx slide assembly (pdf_to_pptx.py)
+    await runPython([
+      path.join(__dirname, 'pdf_to_pptx.py'),
+      inputPdfPath,
+      outputPptxPath,
+    ]);
 
     const pptxBuffer = await fs.readFile(outputPptxPath);
     const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
@@ -535,6 +532,111 @@ app.post('/api/convert/pdf-to-excel', upload.single('file'), async (req, res) =>
   }
 });
 
+// Extract embedded assets (images / attachments) via PyMuPDF -> ZIP
+async function extractAssetsViaPython(req, res, mode) {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No PDF file uploaded.' });
+  }
+
+  const tempId = `extract_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const tempDir = path.join(os.tmpdir(), tempId);
+  const inputPdfPath = path.join(tempDir, 'input.pdf');
+  const outputZipPath = path.join(tempDir, 'output.zip');
+  const pythonScriptPath = path.join(__dirname, 'extract_assets.py');
+
+  try {
+    await fs.mkdir(tempDir, { recursive: true });
+    await fs.writeFile(inputPdfPath, req.file.buffer);
+    await runPython([pythonScriptPath, mode, inputPdfPath, outputZipPath]);
+    const zipBuffer = await fs.readFile(outputZipPath);
+    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${originalName}_${mode}.zip"`);
+    return res.send(zipBuffer);
+  } catch (error) {
+    console.error(`Extract ${mode} error:`, error);
+    const msg = (error.message || '').replace(/python failed with code \d+:\s*/i, '').trim();
+    return res.status(400).json({ error: msg || `Failed to extract ${mode}.` });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+app.post('/api/extract-images', upload.single('file'), (req, res) =>
+  extractAssetsViaPython(req, res, 'images')
+);
+app.post('/api/extract-attachments', upload.single('file'), (req, res) =>
+  extractAssetsViaPython(req, res, 'attachments')
+);
+
+// Fallback page/metadata ops via PyMuPDF (used when pdf-lib can't parse a file)
+app.post('/api/page-ops', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No PDF file uploaded.' });
+  }
+  const mode = req.body.mode;
+  const allowed = ['reverse', 'insert-blank', 'flatten', 'grayscale', 'remove-metadata', 'set-metadata'];
+  if (!allowed.includes(mode)) {
+    return res.status(400).json({ error: 'Invalid operation mode.' });
+  }
+
+  const tempId = `pageops_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const tempDir = path.join(os.tmpdir(), tempId);
+  const inputPdfPath = path.join(tempDir, 'input.pdf');
+  const outputPdfPath = path.join(tempDir, 'output.pdf');
+  const paramsPath = path.join(tempDir, 'params.json');
+  const pythonScriptPath = path.join(__dirname, 'page_ops.py');
+
+  try {
+    await fs.mkdir(tempDir, { recursive: true });
+    await fs.writeFile(inputPdfPath, req.file.buffer);
+    await fs.writeFile(paramsPath, req.body.params || '{}');
+    await runPython([pythonScriptPath, mode, inputPdfPath, outputPdfPath, paramsPath]);
+    const pdfBuffer = await fs.readFile(outputPdfPath);
+    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${originalName}_${mode}.pdf"`);
+    return res.send(pdfBuffer);
+  } catch (error) {
+    console.error(`page-ops ${mode} error:`, error);
+    const msg = (error.message || '').replace(/python failed with code \d+:\s*/i, '').trim();
+    return res.status(500).json({ error: msg || `Failed to run ${mode}.` });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+// Rebuild a .docx from edited plain text (after docx preview editing)
+app.post('/api/docx-from-text', async (req, res) => {
+  const { text, filename } = req.body || {};
+  if (typeof text !== 'string') {
+    return res.status(400).json({ error: 'Missing document text.' });
+  }
+  const tempId = `docx_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const tempDir = path.join(os.tmpdir(), tempId);
+  const inputPath = path.join(tempDir, 'input.txt');
+  const outputPath = path.join(tempDir, 'output.docx');
+  try {
+    await fs.mkdir(tempDir, { recursive: true });
+    await fs.writeFile(inputPath, text, 'utf8');
+    await runPython([path.join(__dirname, 'text_to_docx.py'), inputPath, outputPath]);
+    const outBuffer = await fs.readFile(outputPath).catch(() => null);
+    if (!outBuffer) {
+      return res.status(500).json({ error: 'Failed to build the edited document.' });
+    }
+    const safeName = String(filename || 'edited.docx').replace(/[^a-zA-Z0-9._-]/g, '_');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName.endsWith('.docx') ? safeName : `${safeName}.docx`}"`);
+    return res.send(outBuffer);
+  } catch (error) {
+    console.error('docx-from-text error:', error);
+    const msg = (error.message || '').replace(/python failed with code \d+:\s*/i, '').trim();
+    return res.status(500).json({ error: msg || 'Failed to build the edited document.' });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 // Protect PDF with Password
 app.post('/api/protect-pdf', upload.single('file'), async (req, res) => {
   if (!req.file) {
@@ -554,32 +656,13 @@ app.post('/api/protect-pdf', upload.single('file'), async (req, res) => {
   try {
     await fs.writeFile(inputPath, req.file.buffer);
 
-    // Ghostscript password protection arguments
-    const gsArgs = [
-      '-sDEVICE=pdfwrite',
-      '-dCompatibilityLevel=1.4',
-      `-sOwnerPassword=${password}`,
-      `-sUserPassword=${password}`,
-      '-dEncryptionR=3',
-      '-dKeyLength=128',
-      '-dPermissions=-4',
-      '-dNOPAUSE',
-      '-dQUIET',
-      '-dBATCH',
-      `-sOutputFile=${outputPath}`,
+    // pikepdf AES-256 password protection (protect_pdf.py)
+    await runPython([
+      path.join(__dirname, 'protect_pdf.py'),
       inputPath,
-    ];
-
-    await new Promise((resolve, reject) => {
-      const gs = spawn('gs', gsArgs);
-      let stderr = '';
-      gs.stderr.on('data', (d) => (stderr += d.toString()));
-      gs.on('close', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`Ghostscript protection failed: ${stderr}`));
-      });
-      gs.on('error', (err) => reject(err));
-    });
+      outputPath,
+      password,
+    ]);
 
     const protectedBuffer = await fs.readFile(outputPath);
     const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
@@ -718,7 +801,7 @@ sys.exit(0)
  * Executes a PDF crop operation using Ghostscript.
  * It maps normalized client coordinates to page dimensions.
  */
-async function executeGhostscriptCrop(inputBuffer, cropParams, originalFilename) {
+async function executeGhostscriptCrop(inputBuffer, cropParams, _originalFilename) {
   const tempId = `crop_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
   const tempDir = os.tmpdir();
   const inputPath = path.join(tempDir, `${tempId}_in.pdf`);
@@ -918,6 +1001,117 @@ app.post('/api/edit-pdf-text', upload.single('file'), async (req, res) => {
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
+});
+
+// ==============================
+//  TEMPLATES HUB
+// ==============================
+
+const TEMPLATES_PATH = path.join(__dirname, 'data', 'templates.json');
+const TPL_USAGE_PATH = path.join(__dirname, 'data', 'template-usage.json');
+const fsSync = require('fs');
+
+let templatesData = { categories: [], templates: [] };
+let templatesMtime = 0;
+function getTemplatesData() {
+  try {
+    const { mtimeMs } = fsSync.statSync(TEMPLATES_PATH);
+    if (mtimeMs !== templatesMtime) {
+      templatesData = JSON.parse(fsSync.readFileSync(TEMPLATES_PATH, 'utf8'));
+      templatesMtime = mtimeMs;
+    }
+  } catch (e) {
+    if (!templatesMtime) console.warn('templates.json not loaded:', e.message);
+  }
+  return templatesData;
+}
+getTemplatesData();
+
+let templateUsage = {};
+try {
+  templateUsage = JSON.parse(fsSync.readFileSync(TPL_USAGE_PATH, 'utf8'));
+} catch { /* no saved usage counters yet */ }
+
+app.get('/api/templates', (req, res) => {
+  const data = getTemplatesData();
+  const templates = data.templates.map((t) => ({
+    ...t,
+    usage: templateUsage[t.id] || {},
+  }));
+  res.json({ categories: data.categories, templates });
+});
+
+// Lightweight usage analytics: view | preview | use | download
+app.post('/api/templates/:id/track', (req, res) => {
+  const { type } = req.body || {};
+  if (!['view', 'preview', 'use', 'download'].includes(type)) {
+    return res.status(400).json({ error: 'invalid type' });
+  }
+  const u = (templateUsage[req.params.id] = templateUsage[req.params.id] || {});
+  u[type] = (u[type] || 0) + 1;
+  fs.writeFile(TPL_USAGE_PATH, JSON.stringify(templateUsage)).catch(() => {});
+  res.json({ ok: true });
+});
+
+// AI proxy — OpenAI-compatible endpoint. Keys live ONLY on the server:
+//   set AI_API_KEY / AI_API_BASE / AI_MODEL in env (or .env) to enable.
+// Without a key the endpoint returns 503 {offline:true} so the frontend
+// can fall back to local behavior instead of erroring.
+app.post('/api/ai', async (req, res) => {
+  const key = process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
+  const base = process.env.AI_API_BASE || 'https://api.openai.com/v1';
+  const model = process.env.AI_MODEL || 'gpt-4o-mini';
+  if (!key) return res.status(503).json({ offline: true, error: 'AI provider not configured on this server.' });
+
+  const { prompt } = req.body || {};
+  if (!prompt || typeof prompt !== 'string' || prompt.length > 20000) {
+    return res.status(400).json({ error: 'Invalid prompt.' });
+  }
+  try {
+    const r = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 1200,
+        temperature: 0.5,
+      }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return res.status(r.status).json({ error: data.error?.message || 'AI provider error.' });
+    res.json({ result: data.choices?.[0]?.message?.content || '' });
+  } catch {
+    res.status(502).json({ error: 'AI provider unreachable.' });
+  }
+});
+
+// AI Assistant project inquiries — validated, stored to JSON (CRM-ready).
+const INQUIRIES_PATH = path.join(os.tmpdir(), 'pdf-forge-inquiries.json');
+app.post('/api/inquiries', async (req, res) => {
+  const { serviceId, service, answers } = req.body || {};
+  if (!serviceId || !Array.isArray(answers) || !answers.length) {
+    return res.status(400).json({ error: 'Invalid inquiry.' });
+  }
+  const clean = {
+    serviceId: String(serviceId).slice(0, 60),
+    service: String(service || '').slice(0, 120),
+    answers: answers.slice(0, 30).map((a) => String(a).slice(0, 500)),
+    createdAt: new Date().toISOString(),
+  };
+  try {
+    let list = [];
+    try { list = JSON.parse(await fs.readFile(INQUIRIES_PATH, 'utf8')); } catch { /* first inquiry */ }
+    list.push(clean);
+    await fs.writeFile(INQUIRIES_PATH, JSON.stringify(list, null, 2));
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'Could not store inquiry.' });
+  }
+});
+app.get('/api/inquiries', async (_req, res) => {
+  try { res.json(JSON.parse(await fs.readFile(INQUIRIES_PATH, 'utf8'))); }
+  catch { res.json([]); }
 });
 
 const PORT = process.env.PORT || 5000;

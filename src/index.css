@@ -1,1 +1,155 @@
 @import "tailwindcss";
+
+/* ============ Animation system ============ */
+/* Centralized timing + easing — one motion language for the whole site.
+   Durations: micro 120-180ms, normal 200-300ms, medium 300-450ms, large 450-600ms */
+:root {
+  --pf-fast: 150ms;
+  --pf-normal: 250ms;
+  --pf-medium: 380ms;
+  --pf-large: 500ms;
+  --pf-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --pf-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --pf-ease-io: cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+@keyframes pf-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes pf-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes pf-zoom {
+  from { opacity: 0; transform: scale(0.94) translateY(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes pf-zoom-out {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(0.95) translateY(6px); }
+}
+@keyframes pf-slide-up {
+  from { opacity: 0; transform: translateY(26px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pf-slide-down {
+  from { opacity: 0; transform: translateY(-14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pf-shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-6px); }
+  40%, 80% { transform: translateX(6px); }
+}
+@keyframes pf-check-circle {
+  from { stroke-dashoffset: 160; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes pf-check-mark {
+  from { stroke-dashoffset: 40; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes pf-progress {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(280%); }
+}
+@keyframes pf-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+@keyframes pf-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pf-menu {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pf-pop {
+  from { opacity: 0; transform: scale(0.97) translateY(6px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes pf-grow {
+  from { opacity: 0; max-height: 0; }
+  to { opacity: 1; max-height: 400px; }
+}
+@keyframes pf-tip {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.pf-overlay { animation: pf-fade var(--pf-normal, 200ms) ease both; }
+.pf-overlay-out { animation: pf-fade-out 0.18s ease both; }
+.pf-panel { animation: pf-zoom 0.28s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.pf-panel-out { animation: pf-zoom-out 0.18s ease both; }
+
+/* ---------- page-load / entrance utilities (all use --d for stagger) ---------- */
+/* backwards fill: hidden only during the delay — hover transforms still work after the animation */
+.pf-rise { animation: pf-rise var(--pf-medium) var(--pf-ease) backwards; animation-delay: var(--d, 0ms); }
+.pf-fade-in { animation: pf-fade var(--pf-normal) ease-out backwards; animation-delay: var(--d, 0ms); }
+.pf-pop { animation: pf-pop var(--pf-medium) var(--pf-ease) backwards; animation-delay: var(--d, 0ms); }
+.pf-menu { animation: pf-menu 220ms var(--pf-ease) backwards; animation-delay: var(--d, 0ms); }
+.pf-tip { animation: pf-tip 180ms ease-out backwards; }
+.pf-grow { animation: pf-grow var(--pf-medium) var(--pf-ease) backwards; }
+
+/* ---------- micro-interactions ---------- */
+/* physical press feedback — buttons, cards */
+.pf-press { transition: transform var(--pf-fast) var(--pf-ease-out); }
+.pf-press:active { transform: scale(0.98); }
+
+/* card hover: lift 2px + border/shadow strengthen */
+.pf-card { transition: transform var(--pf-normal) var(--pf-ease), box-shadow var(--pf-normal) var(--pf-ease), border-color var(--pf-normal) ease, background-color var(--pf-normal) ease; }
+.pf-card:hover { transform: translateY(-2px); }
+
+/* hover arrow: slides 3px in, appears smoothly — put pf-arrow on the arrow icon */
+.pf-arrow { transition: transform var(--pf-fast) var(--pf-ease), opacity var(--pf-fast) ease; opacity: 0; transform: translateX(-3px); }
+.group:hover .pf-arrow, a:hover > .pf-arrow, button:hover > .pf-arrow { opacity: 1; transform: translateX(0); }
+
+/* horizontal scroll strip (filter pills) — hide the scrollbar everywhere */
+.pf-scroll-x { scrollbar-width: none; -ms-overflow-style: none; }
+.pf-scroll-x::-webkit-scrollbar { display: none; }
+
+/* FAQ accordion — smooth open via animation + rotating plus */
+details.faq summary { list-style: none; }
+details.faq summary::-webkit-details-marker { display: none; }
+details.faq .faq-plus { transition: transform var(--pf-normal) var(--pf-ease); }
+details.faq[open] .faq-plus { transform: rotate(45deg); }
+details.faq[open] .faq-body { animation: pf-rise var(--pf-normal) var(--pf-ease) both; }
+
+/* focus ring — consistent accessible focus */
+.pf-focus:focus-visible, .pf-card:focus-visible, .pf-press:focus-visible {
+  outline: 2px solid #f43f5e;
+  outline-offset: 2px;
+  border-radius: 0.75rem;
+}
+.pf-slide-up { animation: pf-slide-up 0.35s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.pf-slide-down { animation: pf-slide-down 0.3s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.pf-shake { animation: pf-shake 0.45s ease both; }
+.pf-check-circle { stroke-dasharray: 160; animation: pf-check-circle 0.5s ease-out both; }
+.pf-check-mark { stroke-dasharray: 40; animation: pf-check-mark 0.3s 0.4s ease-out both; }
+.pf-progress-bar { animation: pf-progress 1.4s ease-in-out infinite; }
+.pf-float { animation: pf-float 2.4s ease-in-out infinite; }
+
+/* Scroll-reveal for homepage sections/cards */
+.reveal-init { opacity: 0; }
+.reveal-init.pf-reveal {
+  animation: pf-slide-up 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: var(--reveal-delay, 0ms);
+}
+
+/* Respect reduced motion — kill all non-essential animation */
+@media (prefers-reduced-motion: reduce) {
+  .pf-overlay, .pf-overlay-out, .pf-panel, .pf-panel-out,
+  .pf-slide-up, .pf-slide-down, .pf-shake,
+  .pf-check-circle, .pf-check-mark, .pf-progress-bar, .pf-float,
+  .pf-rise, .pf-fade-in, .pf-pop, .pf-menu, .pf-tip, .pf-grow,
+  details.faq[open] .faq-body,
+  .reveal-init.pf-reveal {
+    animation: none !important;
+  }
+  .pf-card:hover, .pf-press:active { transform: none; }
+  .pf-arrow { opacity: 1; transform: none; }
+  details.faq .faq-plus { transition: none; }
+  .reveal-init { opacity: 1; }
+}

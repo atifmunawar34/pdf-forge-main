@@ -168,6 +168,9 @@ def find_system_font(span_font_name, bold=False, italic=False):
                 score = 4
             elif core and len(core) >= 3 and (core in stem or (stem_core and stem_core in core)):
                 score = 2
+            elif core and len(core) >= 4 and (stem.startswith(core[:4]) or core.startswith(stem_core[:4] if len(stem_core) >= 4 else stem_core)):
+                # family-prefix match: "bookantiqua" -> "bookosb", "timesnewroman" -> "timesbd"
+                score = 2
             elif want in stem or stem in want:
                 score = 1
             else:
@@ -201,11 +204,22 @@ def builtin_font_name(span_font_name, bold=False, italic=False):
 
 
 def wrap_lines(font, text, fontsize, max_width):
-    """Greedy word-wrap using real font metrics."""
+    """Greedy word-wrap using real font metrics; hard-breaks single words
+    wider than the box so text never spills into neighbouring cells."""
     out = []
     for para in text.split("\n"):
         cur = ""
         for w in para.split(" "):
+            if font.text_length(w, fontsize=fontsize) > max_width:
+                # split the oversized word at character level
+                piece = ""
+                for ch in w:
+                    if piece and font.text_length(piece + ch, fontsize=fontsize) > max_width:
+                        out.append((cur + " " + piece).strip() if cur else piece)
+                        cur, piece = "", ""
+                    else:
+                        piece += ch
+                w = piece
             trial = (cur + " " + w).strip()
             if cur and font.text_length(trial, fontsize=fontsize) > max_width:
                 out.append(cur)
@@ -227,7 +241,11 @@ def apply_replace(doc, page, e):
     # 1. discover original font BEFORE redacting — prefer the real font name
     #    detected in the browser (pdf.js FontFaceObject.name == PDF BaseFont)
     span = dominant_span(page, rect)
-    span_font = e.get("font") or (span[0] if span else "")
+    span_font = e.get("font") or ""
+    # browser may send an internal pdf.js id ("g_d0_f1") — prefer PyMuPDF's
+    # own span font name in that case
+    if not span_font or re.match(r"^g_[a-zA-Z0-9_]+$", span_font):
+        span_font = span[0] if span else span_font
     if not size:
         size = span[1] if span else 11
     if span and e.get("color") is None:
@@ -240,6 +258,11 @@ def apply_replace(doc, page, e):
     n = " ".join(filter(None, [span_font, span[0] if span else ""])).lower()
     bold = bool(re.search(r"bold|black|heavy|semibold|demi", n))
     italic = bool(re.search(r"italic|oblique|slant", n))
+    # explicit user toggles in the editor toolbar override detection
+    if e.get("bold") is not None:
+        bold = bool(e["bold"])
+    if e.get("italic") is not None:
+        italic = bool(e["italic"])
     base_name = span_font or (span[0] if span else "")
     fontname = "F0" if fontfile else builtin_font_name(base_name, bold, italic)
     try:
@@ -276,10 +299,10 @@ def apply_replace(doc, page, e):
                 mfont = fitz.Font("helv")
                 fontname = "helv"
 
-    # 2. remove original text (text-only redaction, keep images/vector art)
-    #    fill with the real background color — NOT always white (dark headers!)
-    bg = srgb(e["bg"]) if e.get("bg") is not None else dominant_bg(page, rect)
-    page.add_redact_annot(rect, fill=bg)
+    # 2. remove original text with NO fill — the page's real background
+    #    (colored cells, gradients, borders, images) shows through untouched,
+    #    so there is no visible patch/layer where the text was
+    page.add_redact_annot(rect, fill=False)
     page.apply_redactions(
         images=fitz.PDF_REDACT_IMAGE_NONE,
         graphics=fitz.PDF_REDACT_LINE_ART_NONE,
@@ -289,16 +312,36 @@ def apply_replace(doc, page, e):
     if not text.strip():
         return
 
-    # 3. re-insert wrapped text with the original font
+    # 3. re-insert wrapped text with the original font — honour the chosen
+    #    horizontal alignment inside the original block box (keeps centred
+    #    headings/cells centred instead of jumping left)
     bx, by = e.get("baseline", [rect.x0, rect.y0 + size * 0.8])
     lh = size * float(e.get("lineHeight") or 1.22)
-    for i, ln in enumerate(wrap_lines(mfont, text, size, max_w)):
+    align = e.get("align") or "left"
+    max_h = e.get("maxH")
+    lines = wrap_lines(mfont, text, size, max_w)
+    # auto-shrink so wrapped lines stay inside the cell instead of
+    # spilling over the boxes below
+    if max_h:
+        while len(lines) * lh > float(max_h) and size > (float(e.get("fontSize")) or size) * 0.35:
+            size *= 0.88
+            lh = size * float(e.get("lineHeight") or 1.22)
+            lines = wrap_lines(mfont, text, size, max_w)
+    # vertically centre the lines in the available cell room so multi-line
+    # edits stay middle-aligned like the original text
+    voff = max(0.0, (float(max_h) - len(lines) * lh) / 2) if max_h else 0.0
+    for i, ln in enumerate(lines):
+        if align == "left":
+            lx = bx
+        else:
+            w = mfont.text_length(ln, fontsize=size)
+            lx = (rect.x0 + (rect.width - w) / 2) if align == "center" else (rect.x1 - w)
         kw = dict(fontsize=size, color=color, render_mode=0)
         if fontfile:
             kw.update(fontname=fontname, fontfile=fontfile)
         else:
             kw.update(fontname=fontname)
-        page.insert_text((bx, by + i * lh), ln, **kw)
+        page.insert_text((lx, by + voff + i * lh), ln, **kw)
 
 
 def apply_edit(doc, page, e):
@@ -310,6 +353,9 @@ def apply_edit(doc, page, e):
     if action in ("whiteout", "redact"):
         if action == "redact":
             fill = (0, 0, 0)
+        elif e.get("nofill"):
+            # text removal only — leave the page background untouched
+            fill = False
         else:
             fill = srgb(e["bg"]) if e.get("bg") is not None else dominant_bg(page, fitz.Rect(e["rect"]))
         page.add_redact_annot(fitz.Rect(e["rect"]), fill=fill)

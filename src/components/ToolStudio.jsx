@@ -449,6 +449,14 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   // Edit PDF Tool State
   const [isEditingPdf, setIsEditingPdf] = useState(false);
   const [, setEditedPdfBlob] = useState(null);
+  const editAutoStartedRef = useRef(false);
+  // skip the intro card — open the editor straight away once a file is loaded
+  useEffect(() => {
+    if (tool?.id === 'edit' && files[0] && !editAutoStartedRef.current) {
+      editAutoStartedRef.current = true;
+      setIsEditingPdf(true);
+    }
+  }, [tool?.id, files]);
 
   const updateCurrentPageCropBox = (updater) => {
     setPageCropBoxes((prev) => {

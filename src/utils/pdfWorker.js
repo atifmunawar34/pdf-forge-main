@@ -2573,9 +2573,9 @@ export async function convertPdfToPdfA(file) {
   const copied = await out.copyPages(src, src.getPageIndices());
   copied.forEach((page) => out.addPage(page));
   out.setTitle(src.getTitle() || file.name.replace(/\.[^/.]+$/, ''));
-  out.setAuthor(src.getAuthor() || 'PDF Forge');
-  out.setProducer('PDF Forge PDF/A');
-  out.setCreator('PDF Forge');
+  out.setAuthor(src.getAuthor() || 'ilovetopdf');
+  out.setProducer('ilovetopdf PDF/A');
+  out.setCreator('ilovetopdf');
   out.setSubject('Archival PDF/A document');
   out.setCreationDate(new Date());
   out.setModificationDate(new Date());
@@ -2760,7 +2760,7 @@ function extractiveSummary(text, maxSentences = 8) {
 export async function summarizePdf(file) {
   const extracted = await extractPdfPlainText(file);
   const summary = extractiveSummary(extracted.text);
-  const report = `PDF Forge Summary\nFile: ${file.name}\nPages: ${extracted.pages.length}\n\n${summary}\n`;
+  const report = `ilovetopdf Summary\nFile: ${file.name}\nPages: ${extracted.pages.length}\n\n${summary}\n`;
   const blob = new Blob([report], { type: 'text/plain;charset=utf-8' });
   return {
     blob,

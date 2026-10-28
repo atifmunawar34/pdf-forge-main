@@ -11,7 +11,7 @@ export const useSeo = ({ title, description, slug }) => {
     if (meta && description) meta.setAttribute('content', description);
     let canon = document.querySelector('link[rel="canonical"]');
     const prevCanon = canon?.getAttribute('href');
-    if (canon && slug) canon.setAttribute('href', `https://atifmunawar34.github.io/pdf-forge/${slug}`);
+    if (canon && slug) canon.setAttribute('href', `https://atifmunawar34.github.io/ilovetopdf/${slug}`);
     return () => {
       document.title = prevTitle;
       if (prevDesc != null && meta) meta.setAttribute('content', prevDesc);
@@ -20,11 +20,16 @@ export const useSeo = ({ title, description, slug }) => {
   }, [title, description, slug]);
 };
 
+// Every downloaded file carries the site brand — e.g. merged.pdf →
+// ilovetopdf_merged.pdf — unless the name already includes it.
+export const brandFileName = (name) =>
+  /ilovetopdf/i.test(name || '') ? name : `ilovetopdf_${name}`;
+
 export const download = (blob, filename) => {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename;
+  a.download = brandFileName(filename);
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 };

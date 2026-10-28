@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { Copy, Check, UploadCloud, Download } from 'lucide-react';
-import { download, fmtSize } from './utils';
+import { download, fmtSize, brandFileName } from './utils';
 
 /* Shared UI primitives for the toolkit engines (components only — helpers live in utils.js) */
 
@@ -82,7 +82,7 @@ export const CopyBtn = ({ text }) => {
  */
 export const DownloadBtn = ({ blob, url, text, filename, label = 'Download', variant = 'primary', mime = 'text/plain', className = '' }) => {
   const ext = filename?.includes('.') ? filename.split('.').pop() : '';
-  const [name, setName] = useState(() => (filename || 'file').replace(/\.[^/.]+$/, ''));
+  const [name, setName] = useState(() => brandFileName((filename || 'file').replace(/\.[^/.]+$/, '')));
   const finalName = `${name.trim() || 'file'}${ext ? `.${ext}` : ''}`;
   const size = blob?.size ?? (text != null ? new TextEncoder().encode(text).length : null);
   const doDownload = () => {

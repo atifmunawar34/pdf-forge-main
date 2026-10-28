@@ -17,6 +17,7 @@ export async function generateTemplatePdf(tpl, values) {
   const w = new W(pdfDoc, fonts);
   w.theme = tpl.theme || 'modern';
   w.variant = tpl.variant;
+  w.decor = tpl.decor;
   if (w.theme === 'classic' || w.theme === 'elegant') {
     w.f = { reg: fonts.sreg, bold: fonts.sbold, italic: fonts.sitalic };
   }
@@ -42,6 +43,7 @@ export async function generateTemplatePdf(tpl, values) {
   }
 
   if (tpl.accent && ACCENTS[tpl.accent]) w.accent = ACCENTS[tpl.accent];
+  w.drawDecor(); // page 1 was created in the constructor, before accent+decor were set
   const layout =
     (tpl.docType === 'cv' && tpl.layout === 'sidebar' ? LAYOUTS.cvSidebar
       : tpl.docType === 'cv' && tpl.layout === 'topband' ? LAYOUTS.cvTopband
@@ -58,7 +60,7 @@ export function downloadPdf(bytes, filename) {
   const url = pdfBlobUrl(bytes);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename;
+  a.download = /ilovetopdf/i.test(filename || '') ? filename : `ilovetopdf_${filename}`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }

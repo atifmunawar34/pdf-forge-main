@@ -21,7 +21,7 @@ const newBlock = (type) => ({
  */
 export default function DocumentCreator({ onHome, onTemplates }) {
   useSeo({
-    title: 'Document Creator — Build & Download PDFs | PDF Forge',
+    title: 'Document Creator — Build & Download PDFs | ilovetopdf',
     description: 'Free online document creator: add text, images, tables and signatures, then download a polished PDF.',
     slug: 'document-creator',
   });

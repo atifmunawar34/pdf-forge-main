@@ -132,7 +132,7 @@ export default function ImageTool({ def }) {
         }
         case 'watermark': {
           const { c, ctx } = await canvasOf(file);
-          const txt = o.text || 'PDF Forge';
+          const txt = o.text || 'ilovetopdf';
           const sizePx = Math.max(14, Math.round(c.width / 18));
           ctx.font = `bold ${sizePx}px sans-serif`;
           ctx.fillStyle = `rgba(255,255,255,${Math.min(1, parseFloat(o.opacity ?? 0.5))})`;

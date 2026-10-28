@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { ChevronRight, ArrowRight, CheckCircle2, HelpCircle } from 'lucide-react';
 import { ENGINES } from './toolkit/engines';
 import { useSeo } from './toolkit/utils';
+import ToolGlyph from './ToolGlyph';
 
 const DEFAULT_FAQS = (name) => [
   { q: `Is ${name} free?`, a: `Yes — ${name} is completely free, with no signup and no limits.` },
@@ -21,7 +22,7 @@ export default function ToolPage({ category, tool, onHome, onOpenCategory, onOpe
   const faqs = tool.faqs || DEFAULT_FAQS(tool.name);
 
   useSeo({
-    title: `${tool.name} — Free Online | PDF Forge`,
+    title: `${tool.name} — Free Online | ilovetopdf`,
     description: tool.desc,
     slug: `${category.slug}/${tool.id}`,
   });
@@ -47,8 +48,8 @@ export default function ToolPage({ category, tool, onHome, onOpenCategory, onOpe
       <div className={`relative overflow-hidden rounded-3xl ${category.chipBg || 'bg-slate-50'} border border-slate-200 p-5 sm:p-7 mb-6 pf-rise`} style={{ '--d': '60ms' }}>
         <div className="absolute -top-12 -right-12 w-40 h-40 bg-white/40 rounded-full blur-2xl pointer-events-none" />
         <div className="flex items-start gap-4">
-          <span className={`w-12 h-12 rounded-2xl bg-white ${category.accent || 'text-rose-600'} shadow-sm flex items-center justify-center shrink-0`}>
-            {category.icon ? <category.icon className="w-6 h-6" /> : <ChevronRight className="w-6 h-6" />}
+          <span className="shrink-0">
+            <ToolGlyph icon={tool.icon || category.icon || ChevronRight} colorClass={tool.color || category.accent || 'text-rose-600'} size={48} />
           </span>
           <div className="min-w-0">
             <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">{tool.name}</h1>
@@ -123,11 +124,16 @@ export default function ToolPage({ category, tool, onHome, onOpenCategory, onOpe
               onClick={() => onOpenTool(category, t)}
               className="group bg-white border border-slate-200 rounded-2xl p-4 text-left transition hover:shadow-md hover:border-rose-200 cursor-pointer"
             >
-              <p className="font-bold text-sm text-slate-800 group-hover:text-rose-600 transition">{t.name}</p>
-              <p className="mt-1 text-xs text-slate-500 line-clamp-2">{t.desc}</p>
-              <span className="mt-2 inline-flex items-center gap-1 text-[11px] font-bold text-rose-500">
-                Open <ArrowRight className="w-3 h-3" />
-              </span>
+              <div className="flex items-start gap-3">
+                <ToolGlyph icon={t.icon || category.icon || ChevronRight} colorClass={t.color || category.accent || 'text-rose-600'} size={32} />
+                <div className="min-w-0 flex-1">
+                  <p className="font-bold text-sm text-slate-800 group-hover:text-rose-600 transition">{t.name}</p>
+                  <p className="mt-1 text-xs text-slate-500 line-clamp-2">{t.desc}</p>
+                  <span className="mt-2 inline-flex items-center gap-1 text-[11px] font-bold text-rose-500">
+                    Open <ArrowRight className="w-3 h-3" />
+                  </span>
+                </div>
+              </div>
             </button>
           ))}
         </div>

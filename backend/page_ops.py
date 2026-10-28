@@ -1,5 +1,5 @@
 """
-Fallback page/metadata operations for PDF Forge — used when pdf-lib
+Fallback page/metadata operations for iLoveToPDF — used when pdf-lib
 cannot parse a file (broken xref, linearized, hybrid streams, etc.).
 
 Usage:

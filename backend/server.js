@@ -948,8 +948,12 @@ app.post('/api/convert/pdf-to-markdown', upload.single('file'), async (req, res)
 });
 
 // Edit PDF text — preserves ORIGINAL embedded fonts via PyMuPDF
-app.post('/api/edit-pdf-text', upload.single('file'), async (req, res) => {
-  if (!req.file) {
+app.post('/api/edit-pdf-text', upload.fields([
+  { name: 'file', maxCount: 1 },
+  { name: 'imgs', maxCount: 40 },
+]), async (req, res) => {
+  const pdfFile = req.files?.file?.[0];
+  if (!pdfFile) {
     return res.status(400).json({ error: 'No PDF file uploaded.' });
   }
 
@@ -967,8 +971,29 @@ app.post('/api/edit-pdf-text', upload.single('file'), async (req, res) => {
 
   try {
     await fs.mkdir(tempDir, { recursive: true });
-    await fs.writeFile(inputPdfPath, req.file.buffer);
-    await fs.writeFile(editsPath, editsJson);
+    await fs.writeFile(inputPdfPath, pdfFile.buffer);
+    // replacement image files — map each imgIdx to a real path in the payload
+    const imgFiles = req.files?.imgs || [];
+    let payloadStr = editsJson;
+    if (imgFiles.length) {
+      const payload = JSON.parse(editsJson);
+      const paths = [];
+      for (let i = 0; i < imgFiles.length; i++) {
+        const p = path.join(tempDir, `img_${i}${path.extname(imgFiles[i].originalname || '.png')}`);
+        await fs.writeFile(p, imgFiles[i].buffer);
+        paths.push(p);
+      }
+      for (const pdata of Object.values(payload.pages || {})) {
+        for (const e of pdata.edits || []) {
+          if (e.action === 'imgreplace' && Number.isInteger(e.imgIdx) && paths[e.imgIdx]) {
+            e.imgPath = paths[e.imgIdx];
+          }
+          delete e.imgIdx;
+        }
+      }
+      payloadStr = JSON.stringify(payload);
+    }
+    await fs.writeFile(editsPath, payloadStr);
 
     await new Promise((resolve, reject) => {
       const py = spawn('python3', [pythonScriptPath, inputPdfPath, outputPdfPath, editsPath]);
@@ -990,7 +1015,7 @@ app.post('/api/edit-pdf-text', upload.single('file'), async (req, res) => {
     });
 
     const pdfBuffer = await fs.readFile(outputPdfPath);
-    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    const originalName = pdfFile.originalname.replace(/\.[^/.]+$/, '');
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${originalName}_edited.pdf"`);
@@ -998,6 +1023,101 @@ app.post('/api/edit-pdf-text', upload.single('file'), async (req, res) => {
   } catch (error) {
     console.error('PDF text edit error:', error);
     return res.status(500).json({ error: 'Failed to apply text edits to PDF.' });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+// List embedded images per page (for the editor's Image tool)
+app.post('/api/pdf-images', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No PDF file uploaded.' });
+  }
+  const tempId = `imglist_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const tempDir = path.join(os.tmpdir(), tempId);
+  const inputPdfPath = path.join(tempDir, 'input.pdf');
+  const pythonScriptPath = path.join(__dirname, 'list_pdf_images.py');
+
+  try {
+    await fs.mkdir(tempDir, { recursive: true });
+    await fs.writeFile(inputPdfPath, req.file.buffer);
+
+    const json = await new Promise((resolve, reject) => {
+      const py = spawn('python3', [pythonScriptPath, inputPdfPath]);
+      let stdout = '';
+      let stderr = '';
+      py.stdout.on('data', (d) => { stdout += d.toString(); });
+      py.stderr.on('data', (d) => { stderr += d.toString(); });
+      py.on('close', (code) => {
+        if (code === 0) resolve(stdout);
+        else reject(new Error(`list_pdf_images failed with code ${code}: ${stderr}`));
+      });
+      py.on('error', (err) => reject(err));
+    });
+
+    return res.json(JSON.parse(json || '{}'));
+  } catch (error) {
+    console.error('PDF image list error:', error);
+    return res.status(500).json({ error: 'Failed to list PDF images.' });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+// Replace or remove an embedded image (editor's Image tool)
+app.post('/api/edit-pdf-image', upload.fields([
+  { name: 'file', maxCount: 1 },
+  { name: 'image', maxCount: 1 },
+]), async (req, res) => {
+  const pdfFile = req.files?.file?.[0];
+  if (!pdfFile) {
+    return res.status(400).json({ error: 'No PDF file uploaded.' });
+  }
+  const page = parseInt(req.body.page, 10);
+  const xref = parseInt(req.body.xref, 10);
+  const action = req.body.action; // 'replace' | 'delete' | 'move'
+  const imgFile = req.files?.image?.[0];
+  if (!Number.isFinite(page) || !Number.isFinite(xref) || !['replace', 'delete', 'move'].includes(action)) {
+    return res.status(400).json({ error: 'Invalid image edit request.' });
+  }
+  if (action === 'replace' && !imgFile) {
+    return res.status(400).json({ error: 'No replacement image uploaded.' });
+  }
+
+  const tempId = `imgedit_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const tempDir = path.join(os.tmpdir(), tempId);
+  const inputPdfPath = path.join(tempDir, 'input.pdf');
+  const outputPdfPath = path.join(tempDir, 'output.pdf');
+  const imgPath = imgFile ? path.join(tempDir, `new${path.extname(imgFile.originalname || '.png')}`) : null;
+  const pythonScriptPath = path.join(__dirname, 'edit_pdf_image.py');
+
+  try {
+    await fs.mkdir(tempDir, { recursive: true });
+    await fs.writeFile(inputPdfPath, pdfFile.buffer);
+    if (imgFile) await fs.writeFile(imgPath, imgFile.buffer);
+
+    const args = [pythonScriptPath, inputPdfPath, outputPdfPath, String(page), String(xref), action];
+    if (action === 'replace') args.push(imgPath); else args.push('-');
+    if (req.body.rect) args.push(req.body.rect);
+    if (req.body.newRect) args.push(req.body.newRect);
+
+    await new Promise((resolve, reject) => {
+      const py = spawn('python3', args);
+      let stderr = '';
+      py.stderr.on('data', (d) => { stderr += d.toString(); });
+      py.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`edit_pdf_image failed with code ${code}: ${stderr}`));
+      });
+      py.on('error', (err) => reject(err));
+    });
+
+    const pdfBuffer = await fs.readFile(outputPdfPath);
+    res.setHeader('Content-Type', 'application/pdf');
+    return res.send(pdfBuffer);
+  } catch (error) {
+    console.error('PDF image edit error:', error);
+    return res.status(500).json({ error: 'Failed to edit PDF image.' });
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -1087,7 +1207,7 @@ app.post('/api/ai', async (req, res) => {
 });
 
 // AI Assistant project inquiries — validated, stored to JSON (CRM-ready).
-const INQUIRIES_PATH = path.join(os.tmpdir(), 'pdf-forge-inquiries.json');
+const INQUIRIES_PATH = path.join(os.tmpdir(), 'ilovetopdf-inquiries.json');
 app.post('/api/inquiries', async (req, res) => {
   const { serviceId, service, answers } = req.body || {};
   if (!serviceId || !Array.isArray(answers) || !answers.length) {

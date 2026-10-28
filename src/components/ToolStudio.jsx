@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   ArrowLeft,
-  CheckCircle2,
   ArrowRight,
   Download,
   Trash2,
@@ -56,13 +55,38 @@ import {
   Sparkles,
   Languages,
   GitCompare,
-  Layers
+  ChevronRight,
+  Link2,
+  Share2,
+  ExternalLink,
+  Star
 } from 'lucide-react';
+
+// Brand glyphs (lucide no longer ships social brand icons)
+const FacebookIcon = (p) => (
+  <svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" {...p}>
+    <path d="M13.5 21.9v-8h2.7l.4-3.1h-3.1V8.8c0-.9.25-1.5 1.55-1.5h1.65V4.5c-.3 0-1.3-.12-2.45-.12-2.4 0-4.05 1.47-4.05 4.16v2.32H7.5v3.1h2.7v8z" />
+  </svg>
+);
+const XIcon = (p) => (
+  <svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" {...p}>
+    <path d="M17.5 3h3.1l-6.8 7.8L21.8 21h-6.3l-4.9-6.4L5 21H1.9l7.3-8.3L2.2 3h6.4l4.4 5.8L17.5 3zm-1.1 16.1h1.7L7.7 4.8H5.9L16.4 19.1z" />
+  </svg>
+);
+const LinkedInIcon = (p) => (
+  <svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" {...p}>
+    <path d="M6.9 8.6H4V20h2.9zM5.4 3.4a1.7 1.7 0 100 3.4 1.7 1.7 0 000-3.4zM11 8.6h2.8v1.6h.04c.4-.74 1.35-1.9 2.86-1.9 3 0 3.6 1.97 3.6 4.6V20h-3v-6.2c0-1.5-.03-3.4-2.07-3.4-2.07 0-2.4 1.6-2.4 3.3V20h-2.9z" />
+  </svg>
+);
 import PdfTextEditor from './PdfTextEditor';
+import ToolGlyph from './ToolGlyph';
 import JSZip from 'jszip';
 import { popupBus } from '../utils/popupBus';
 import { PDF_CATEGORIES } from '../data/pdfTools';
 import { RELATED_TOOLS } from '../data/popupConfig';
+import { useT } from '../i18n/index.jsx';
+import { toolName } from '../i18n/tools.jsx';
+import Logo from './Logo';
 import {
   mergePDFs,
   splitPDF,
@@ -135,6 +159,7 @@ const WM_CUSTOM_FONTS = {
 };
 
 export default function ToolStudio({ tool, initialFiles, initialImageCards, initialHtmlCode, initialHtmlMode, onBack, onHome, onSwitchTool }) {
+  const t = useT();
   const [files, setFiles] = useState(initialFiles || []);
   const [errorSuggestion, setErrorSuggestion] = useState(null);
 
@@ -148,8 +173,8 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   const [resultPreviewPages, setResultPreviewPages] = useState([]);
   const [resultPreviewIndex, setResultPreviewIndex] = useState(0);
   const [resultZoom, setResultZoom] = useState(1);
-  const [resultBoxH, setResultBoxH] = useState(560);
-  const [zipPreview, setZipPreview] = useState(null);
+  const [, setResultBoxH] = useState(560);
+  const [, setZipPreview] = useState(null);
   const [docxEditText, setDocxEditText] = useState(null);
 
   // Fresh state when jumping between tools (files intentionally carry over)
@@ -166,30 +191,6 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   }, [tool?.id]);
   const resultBoxRef = useRef(null);
   const resultZoomRef = useRef(1);
-
-  useEffect(() => {
-    resultZoomRef.current = resultZoom;
-  }, [resultZoom]);
-  const resultPanRef = useRef(null);
-
-  // Press-and-hold drag to pan around the zoomed page
-  const startResultPan = (e) => {
-    const el = resultBoxRef.current;
-    if (!el || resultZoom <= 1) return;
-    e.preventDefault();
-    resultPanRef.current = { x: e.clientX, y: e.clientY, sl: el.scrollLeft, st: el.scrollTop };
-    el.setPointerCapture?.(e.pointerId);
-  };
-  const moveResultPan = (e) => {
-    const p = resultPanRef.current;
-    const el = resultBoxRef.current;
-    if (!p || !el) return;
-    el.scrollLeft = p.sl - (e.clientX - p.x);
-    el.scrollTop = p.st - (e.clientY - p.y);
-  };
-  const endResultPan = () => {
-    resultPanRef.current = null;
-  };
 
   // Measure the preview box once it mounts (fit baseline) + mouse-wheel zoom.
   // The wheel listener must be native: React's onWheel is passive and can't preventDefault.
@@ -214,9 +215,9 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, [resultPreviewPages.length]);
-  const [resultPreviewTotal, setResultPreviewTotal] = useState(0);
-  const [isResultPreviewLoading, setIsResultPreviewLoading] = useState(false);
-  const [resultPreviewText, setResultPreviewText] = useState('');
+  const [, setResultPreviewTotal] = useState(0);
+  const [, setIsResultPreviewLoading] = useState(false);
+  const [, setResultPreviewText] = useState('');
   const [resultFileInfo, setResultFileInfo] = useState(null);
   const [editedFileName, setEditedFileName] = useState(null);
   const [editedResultMeta, setEditedResultMeta] = useState({});
@@ -246,6 +247,18 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   }, [resultZoom, resultPreviewIndex, result]);
 
   const changeFileInputRef = useRef(null);
+  // Guard: a stray double-trigger of input.click() would queue a second
+  // native dialog that stays open after the file is already added.
+  const pickerOpenedAtRef = useRef(0);
+  // Bumping this remounts the hidden file inputs — if the native picker is
+  // still open, detaching its input forces the dialog to close.
+  const [inputEpoch, setInputEpoch] = useState(0);
+  const openDocPicker = () => {
+    const now = Date.now();
+    if (now - pickerOpenedAtRef.current < 800) return;
+    pickerOpenedAtRef.current = now;
+    changeFileInputRef.current?.click();
+  };
 
   function getFileInputAccept() {
     if (tool?.id === 'jpg-to-pdf' || tool?.id === 'scan') return 'image/jpeg,image/png,image/webp';
@@ -1108,6 +1121,30 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
     e.target.value = '';
   };
 
+  // Workspace-level drop: dropping files anywhere on the studio adds them
+  // (append for multi-file tools, replace otherwise). Also force-closes any
+  // open native picker by remounting the file inputs.
+  const handleWorkspaceFileDrop = (e) => {
+    const types = e.dataTransfer?.types;
+    if (!types || !types.includes('Files')) return; // internal page/card drags
+    e.preventDefault();
+    setInputEpoch((n) => n + 1);
+    const dtFiles = e.dataTransfer.files;
+    if (!dtFiles?.length) return;
+    const pseudo = { target: { files: dtFiles, value: '' } };
+    if (tool?.id === 'merge') handleAddMorePdfs(pseudo);
+    else if (tool?.id === 'compare') {
+      const list = Array.from(dtFiles).slice(0, 2);
+      if (list.length === 2) setFiles(list);
+      else handleReplaceDocument(pseudo);
+    } else if (tool?.id === 'jpg-to-pdf' || tool?.id === 'scan' || tool?.id === 'png-to-pdf' || tool?.id === 'webp-to-pdf') handleAddMoreImages(pseudo);
+    else handleReplaceDocument(pseudo);
+  };
+
+  const allowWorkspaceFileDrop = (e) => {
+    if (e.dataTransfer?.types?.includes('Files')) e.preventDefault();
+  };
+
   const handleAddMorePdfs = async (e) => {
     if (!e.target.files || e.target.files.length === 0) return;
     setErrorMsg('');
@@ -1285,10 +1322,11 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   // Effective download name — user may rename the file in the result panel;
   // the original extension is always preserved.
   const getResultDownloadName = () => {
-    if (!result?.filename) return 'file';
+    if (!result?.filename) return 'ilovetopdf_file';
     const ext = result.filename.includes('.') ? `.${result.filename.split('.').pop()}` : '';
     const typed = (editedFileName || '').trim();
-    const base = (typed ? typed.replace(/\.[^/.]+$/, '') : result.filename.replace(/\.[^/.]+$/, '')) || 'file';
+    const raw = (typed ? typed.replace(/\.[^/.]+$/, '') : result.filename.replace(/\.[^/.]+$/, '')) || 'file';
+    const base = /ilovetopdf/i.test(raw) ? raw : `ilovetopdf_${raw}`;
     return `${base}${ext}`;
   };
 
@@ -1701,18 +1739,6 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
     setSelectedPages(newSet);
   };
 
-  const handleReconfigureSameFile = () => {
-    if (result?.url) {
-      URL.revokeObjectURL(result.url);
-    }
-    setResult(null);
-    setResultPreviewPages([]);
-    setResultPreviewIndex(0);
-    setResultPreviewText('');
-    setErrorMsg('');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
   const executeAction = async () => {
     setErrorMsg('');
     setErrorSuggestion(null);
@@ -1971,27 +1997,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
         previewText: output.previewText || ''
       });
       window.scrollTo({ top: 0, behavior: 'smooth' });
-      // Success popup: download + related tools (once per result)
-      const relatedIds = RELATED_TOOLS[tool?.id] || RELATED_TOOLS.default;
-      const relatedTools = PDF_CATEGORIES.flatMap((c) => c.tools).filter((t) => relatedIds.includes(t.id)).slice(0, 4);
-      popupBus.show({
-        type: 'success',
-        title: 'Your file is ready!',
-        description: `${tool?.name || 'File'} processed successfully.`,
-        fileName: output.filename,
-        fileType: output.blob.type || 'PDF',
-        fileSize: output.compressedSize || output.blob.size,
-        downloadLabel: 'Download',
-        onDownload: () => {
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = output.filename;
-          a.click();
-        },
-        anotherLabel: 'Keep Editing',
-        related: relatedTools,
-        onSelectTool: (t) => popupBus.actions.openTool?.(t),
-      });
+      // Result page shows download + related tools (iLovePDF-style) — no popup needed.
     } catch (err) {
       const msg = err.message || 'An error occurred during processing.';
       setErrorMsg(msg);
@@ -2127,7 +2133,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
 
         <button
           type="button"
-          onClick={() => changeFileInputRef.current?.click()}
+          onClick={() => openDocPicker()}
           className="text-[11px] font-bold text-rose-600 hover:text-rose-700 transition flex items-center space-x-1.5 bg-white hover:bg-rose-50 border border-slate-200 px-3 py-1.5 rounded-xl shadow-xs cursor-pointer"
         >
           <RefreshCw className="w-3.5 h-3.5" />
@@ -2403,45 +2409,43 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
   const isFormsStudio = tool?.id === 'forms' && !result;
 
   return (
-    <div className={`bg-slate-50 text-slate-800 ${isFormsStudio ? 'h-screen overflow-hidden flex flex-col' : 'min-h-screen pb-20'}`}>
+    <div
+      className={`bg-[#f6f4f9] text-slate-800 ${isFormsStudio ? 'h-screen overflow-hidden flex flex-col' : 'min-h-screen pb-20'}`}
+      onDragOver={allowWorkspaceFileDrop}
+      onDrop={handleWorkspaceFileDrop}
+    >
       <input
         type="file"
+        key={inputEpoch}
         ref={changeFileInputRef}
         accept={getFileInputAccept()}
         className="hidden"
         onChange={handleReplaceDocument}
       />
 
-      <header className="sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-slate-200 shrink-0">
+      <header className="sticky top-0 z-30 bg-white border-b border-slate-200 shrink-0">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-12 sm:h-16 flex items-center justify-between">
           <div className="flex items-center space-x-3">
             <button
-              onClick={onHome || onBack}
+              onClick={() => (onHome ? onHome() : onBack?.())}
               className="flex items-center space-x-2 cursor-pointer"
               title="Back to homepage"
             >
-              <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-gradient-to-tr from-rose-500 to-indigo-600 flex items-center justify-center shadow-sm">
-                <Layers className="w-4 h-4 text-white" />
-              </div>
-              <span className="hidden sm:inline text-base font-black tracking-tight text-slate-900">
-                PDF<span className="text-rose-500">Forge</span>
-              </span>
+              <Logo iconSize={28} />
             </button>
             <button
               onClick={onBack}
               className="flex items-center space-x-1.5 text-slate-600 hover:text-slate-900 font-semibold text-xs sm:text-sm px-2.5 py-1 rounded-xl hover:bg-slate-100 transition cursor-pointer"
             >
               <ArrowLeft className="w-4 h-4" />
-              <span>Back</span>
+              <span>{t('back')}</span>
             </button>
           </div>
 
           <div className="flex items-center space-x-2 sm:space-x-3">
-            <div className={`w-7 h-7 sm:w-8 sm:h-8 rounded-lg ${tool?.bg} ${tool?.color} flex items-center justify-center`}>
-              {tool && <tool.icon className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
-            </div>
+            {tool && <ToolGlyph icon={tool.icon} colorClass={tool.color} size={30} />}
             <h2 className="text-xs sm:text-base font-bold text-slate-900 truncate max-w-[150px] sm:max-w-none">
-              {tool?.name} Workspace
+              {tool ? toolName(tool) : ''} Workspace
             </h2>
           </div>
 
@@ -3278,7 +3282,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                     <span className="text-slate-600">{files[0]?.name} ({totalPages} Pages)</span>
                     <button
                       type="button"
-                      onClick={() => changeFileInputRef.current?.click()}
+                      onClick={() => openDocPicker()}
                       className="text-rose-600 hover:text-rose-700 font-bold flex items-center space-x-1 cursor-pointer"
                     >
                       <RefreshCw className="w-3.5 h-3.5" />
@@ -3476,6 +3480,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                         <span>Add from Device</span>
                         <input
                           type="file"
+                          key={`imgs-${inputEpoch}`}
                           id="studioAddImagesInput"
                           multiple
                           accept="image/jpeg,image/png,image/webp"
@@ -3724,6 +3729,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                       <span>Add More Images</span>
                       <input
                         type="file"
+                        key={`imgs2-${inputEpoch}`}
                         id="studioAddImagesInput"
                         multiple
                         accept="image/jpeg,image/png,image/webp"
@@ -4027,7 +4033,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                     <span className="text-slate-600">{files[0]?.name} ({totalPages} Pages)</span>
                     <button
                       type="button"
-                      onClick={() => changeFileInputRef.current?.click()}
+                      onClick={() => openDocPicker()}
                       className="text-rose-600 hover:text-rose-700 font-bold flex items-center space-x-1 cursor-pointer"
                     >
                       <RefreshCw className="w-3.5 h-3.5" />
@@ -4485,7 +4491,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                     <span className="text-slate-600">{files[0]?.name} ({totalPages} Pages)</span>
                     <button
                       type="button"
-                      onClick={() => changeFileInputRef.current?.click()}
+                      onClick={() => openDocPicker()}
                       className="text-rose-600 hover:text-rose-700 font-bold flex items-center space-x-1 cursor-pointer"
                     >
                       <RefreshCw className="w-3.5 h-3.5" />
@@ -4724,7 +4730,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                     <button onClick={() => rotateAllPages(-90)} className="px-3 py-2 bg-white hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-xl font-semibold transition flex items-center space-x-1 cursor-pointer">
                       <RotateCcw className="w-4 h-4" /><span>-90°</span>
                     </button>
-                    <button onClick={() => changeFileInputRef.current?.click()} className="px-3 py-2 bg-white hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-xl font-semibold transition flex items-center space-x-1 cursor-pointer">
+                    <button onClick={() => openDocPicker()} className="px-3 py-2 bg-white hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-xl font-semibold transition flex items-center space-x-1 cursor-pointer">
                       <RefreshCw className="w-3.5 h-3.5" /><span>Change</span>
                     </button>
                   </div>
@@ -4760,7 +4766,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
               <div className="bg-white border border-slate-200 rounded-3xl p-6 space-y-6 shadow-sm">
                 <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
                   <span>Drag & drop pages to rearrange. Hover to rotate or delete individual pages.</span>
-                  <button onClick={() => changeFileInputRef.current?.click()} className="text-amber-700 hover:text-amber-800 font-bold flex items-center space-x-1 cursor-pointer">
+                  <button onClick={() => openDocPicker()} className="text-amber-700 hover:text-amber-800 font-bold flex items-center space-x-1 cursor-pointer">
                     <RefreshCw className="w-3.5 h-3.5" /><span>Change File</span>
                   </button>
                 </div>
@@ -4801,7 +4807,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
               <div className="bg-white border border-slate-200 rounded-3xl p-6 space-y-6 shadow-sm">
                 <div className="flex items-center justify-between text-xs font-bold text-slate-700">
                   <span>Pages to {tool?.id === 'remove' ? 'remove' : 'extract'} (Type range or click thumbnails):</span>
-                  <button onClick={() => changeFileInputRef.current?.click()} className="text-rose-600 hover:text-rose-700 font-bold flex items-center space-x-1 cursor-pointer">
+                  <button onClick={() => openDocPicker()} className="text-rose-600 hover:text-rose-700 font-bold flex items-center space-x-1 cursor-pointer">
                     <RefreshCw className="w-3.5 h-3.5" /><span>Change File</span>
                   </button>
                 </div>
@@ -5010,7 +5016,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                     <span className="font-bold text-slate-800 truncate">{files[0]?.name}</span>
                     <span className="text-slate-400 font-medium">({formatFileSize(files[0]?.size)})</span>
                   </div>
-                  <button onClick={() => changeFileInputRef.current?.click()} className="text-emerald-700 hover:text-emerald-800 font-bold flex items-center space-x-1 cursor-pointer">
+                  <button onClick={() => openDocPicker()} className="text-emerald-700 hover:text-emerald-800 font-bold flex items-center space-x-1 cursor-pointer">
                     <RefreshCw className="w-3.5 h-3.5" /><span>Change File</span>
                   </button>
                 </div>
@@ -5236,7 +5242,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                 <div className="lg:col-span-8 bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
                   <div className="flex items-center justify-between pb-4 border-b border-slate-100 text-xs font-semibold mb-4">
                     <span>{files[0]?.name} · Page {signPage}/{Math.max(totalPages, 1)}</span>
-                    <button type="button" onClick={() => changeFileInputRef.current?.click()} className="text-rose-600 font-bold cursor-pointer">Change File</button>
+                    <button type="button" onClick={() => openDocPicker()} className="text-rose-600 font-bold cursor-pointer">Change File</button>
                   </div>
                   <div
                     ref={signPageRef}
@@ -5359,7 +5365,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                 <div className="lg:col-span-8 bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
                   <div className="flex items-center justify-between pb-4 border-b border-slate-100 text-xs font-semibold mb-4">
                     <span>Drag on the page to black out text · Page {redactPage}/{Math.max(totalPages, 1)}</span>
-                    <button type="button" onClick={() => changeFileInputRef.current?.click()} className="text-rose-600 font-bold cursor-pointer">Change File</button>
+                    <button type="button" onClick={() => openDocPicker()} className="text-rose-600 font-bold cursor-pointer">Change File</button>
                   </div>
                   <div
                     className="relative mx-auto max-w-xl select-none"
@@ -5480,6 +5486,7 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
                     <span>Add More Files</span>
                     <input
                       type="file"
+                      key={`more-${inputEpoch}`}
                       id="studioAddMorePdfsInput"
                       multiple
                       accept="application/pdf"
@@ -5572,282 +5579,172 @@ export default function ToolStudio({ tool, initialFiles, initialImageCards, init
             )}
           </div>
         ) : (
-          <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-10 max-w-4xl mx-auto text-center space-y-6 shadow-md my-auto">
-            <CheckCircle2 className="w-16 h-16 text-emerald-500 mx-auto" />
-            <h3 className="text-xl font-bold text-slate-900">Task Completed Successfully!</h3>
+          <div className="max-w-4xl mx-auto text-center space-y-6 my-auto">
+            {/* iLovePDF-style success header + download row */}
+            {(() => {
+              const titles = {
+                merge: 'PDFs have been merged!', split: 'PDF has been split!', compress: 'PDF has been compressed!',
+                rotate: 'PDF has been rotated!', 'pdf-to-word': 'PDF has been converted to WORD!', 'pdf-to-jpg': 'PDF has been converted to JPG!',
+                'pdf-to-excel': 'PDF has been converted to EXCEL!', 'pdf-to-powerpoint': 'PDF has been converted to POWERPOINT!',
+                'word-to-pdf': 'WORD has been converted to PDF!', 'jpg-to-pdf': 'Images have been converted to PDF!',
+                'excel-to-pdf': 'EXCEL has been converted to PDF!', 'powerpoint-to-pdf': 'POWERPOINT has been converted to PDF!',
+                'html-to-pdf': 'HTML has been converted to PDF!', 'pdf-to-pdfa': 'PDF has been converted to PDF/A!',
+                protect: 'PDF has been protected!', unlock: 'PDF has been unlocked!', watermark: 'PDF has been watermarked!',
+                sign: 'PDF has been signed!', redact: 'PDF has been redacted!', organize: 'PDF has been organized!',
+                remove: 'Pages have been removed!', extract: 'Pages have been extracted!', 'page-numbers': 'Page numbers have been added!',
+                crop: 'PDF has been cropped!', repair: 'PDF has been repaired!', ocr: 'PDF has been OCR processed!',
+                scan: 'Document has been scanned!', edit: 'PDF has been edited!', forms: 'PDF form has been filled!',
+                compare: 'PDFs have been compared!', flatten: 'PDF has been flattened!', grayscale: 'PDF has been converted to grayscale!',
+                'reverse-pages': 'Pages have been reversed!', 'blank-pages': 'Blank pages have been inserted!',
+                'pdf-to-txt': 'PDF has been converted to text!', 'txt-to-pdf': 'Text has been converted to PDF!',
+              };
+              const title = titles[tool?.id] || 'Task completed successfully!';
+              const verbs = {
+                merge: 'merged', split: 'split', compress: 'compressed', rotate: 'rotated',
+                'pdf-to-word': 'converted', 'pdf-to-jpg': 'converted', 'pdf-to-excel': 'converted',
+                'pdf-to-powerpoint': 'converted', 'word-to-pdf': 'converted', 'jpg-to-pdf': 'converted',
+                'excel-to-pdf': 'converted', 'powerpoint-to-pdf': 'converted', 'html-to-pdf': 'converted',
+                'pdf-to-pdfa': 'converted', 'pdf-to-txt': 'converted', 'txt-to-pdf': 'converted',
+                protect: 'protected', unlock: 'unlocked', watermark: 'watermarked', sign: 'signed',
+                redact: 'redacted', organize: 'organized', remove: 'processed', extract: 'extracted',
+                'page-numbers': 'numbered', crop: 'cropped', repair: 'repaired', ocr: 'OCR processed',
+                scan: 'scanned', edit: 'edited', forms: 'filled', compare: 'compared',
+                flatten: 'flattened', grayscale: 'converted', 'reverse-pages': 'reversed', 'blank-pages': 'processed',
+              };
+              const NON_PDF_OUT = ['pdf-to-word', 'pdf-to-jpg', 'pdf-to-excel', 'pdf-to-powerpoint', 'pdf-to-txt', 'extract-images', 'extract-attachments'];
+              const dlLabel = docxEditText !== null
+                ? 'Download Edited File'
+                : NON_PDF_OUT.includes(tool?.id)
+                  ? 'Download converted file'
+                  : verbs[tool?.id] ? `Download ${verbs[tool.id]} PDF` : `Download ${tool?.name || 'File'}`;
+              const relatedIds = RELATED_TOOLS[tool?.id] || RELATED_TOOLS.default;
+              const allTools = PDF_CATEGORIES.flatMap((c) => c.tools);
+              const nextTools = relatedIds.map((rid) => allTools.find((t) => t.id === rid)).filter(Boolean).slice(0, 6);
+              const shareUrl = typeof window !== 'undefined' ? window.location.origin + window.location.pathname : '';
+              const shareText = `I just used ${tool?.name || 'a free tool'} on ilovetopdf — try it!`;
+              const shareLinks = [
+                ['Trustpilot', Star, `https://www.trustpilot.com/`],
+                ['Facebook', FacebookIcon, `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrl)}`],
+                ['Twitter', XIcon, `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}&url=${encodeURIComponent(shareUrl)}`],
+                ['LinkedIn', LinkedInIcon, `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}`],
+              ];
+              const copyLink = () => { try { navigator.clipboard?.writeText(shareUrl); } catch { /* ignore */ } };
+              const openFile = () => window.open(result.url, '_blank');
+              const share = async () => {
+                if (navigator.share) {
+                  try { await navigator.share({ title: 'ilovetopdf', text: shareText, url: shareUrl }); return; } catch { /* cancelled */ }
+                }
+                copyLink();
+              };
+              const discard = () => { setResult(null); setFiles([]); };
+              return (
+                <>
+                  <h3 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">{title}</h3>
 
-            {tool?.id === 'compress' && result.originalSize && result.compressedSize && (
-              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center justify-around text-xs">
-                <div>
-                  <p className="text-[10px] text-slate-400 font-bold uppercase">Original</p>
-                  <p className="font-bold text-slate-700">{formatFileSize(result.originalSize)}</p>
-                </div>
-                <TrendingDown className="w-5 h-5 text-emerald-600" />
-                <div>
-                  <p className="text-[10px] text-slate-400 font-bold uppercase">Compressed</p>
-                  <p className="font-bold text-emerald-700">{formatFileSize(result.compressedSize)}</p>
-                </div>
-                <span className="bg-emerald-600 text-white px-2.5 py-1 rounded-lg text-xs font-extrabold">
-                  -{Math.max(0, Math.round(((result.originalSize - result.compressedSize) / result.originalSize) * 100))}%
-                </span>
-              </div>
-            )}
-
-            <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4 sm:p-6">
-              {isResultPreviewLoading ? (
-                <div className="py-24 flex flex-col items-center justify-center text-slate-400 space-y-3">
-                  <Loader2 className="w-10 h-10 animate-spin text-emerald-500" />
-                  <p className="text-xs font-semibold">Preparing document preview...</p>
-                </div>
-              ) : resultPreviewPages.length > 0 ? (
-                <div className="space-y-4">
-                  {/* Zoom controls */}
-                  <div className="flex items-center justify-center gap-2 text-xs font-semibold text-slate-600">
+                  <div className="flex items-center justify-center gap-4">
                     <button
-                      type="button"
-                      onClick={() => setResultZoom((z) => Math.max(1, +(z - 0.25).toFixed(2)))}
-                      disabled={resultZoom <= 1}
-                      className="w-8 h-8 rounded-xl border border-slate-200 bg-white flex items-center justify-center disabled:opacity-40 cursor-pointer"
-                      title="Zoom out"
+                      onClick={onBack}
+                      title="Process another file"
+                      className="w-10 h-10 sm:w-12 sm:h-12 shrink-0 rounded-full bg-slate-800 hover:bg-slate-700 text-white flex items-center justify-center transition cursor-pointer"
                     >
-                      <ZoomOut className="w-4 h-4" />
+                      <ArrowLeft className="w-5 h-5" />
                     </button>
-                    <span className="w-14 text-center tabular-nums">{Math.round(resultZoom * 100)}%</span>
-                    <button
-                      type="button"
-                      onClick={() => setResultZoom((z) => Math.min(4, +(z + 0.25).toFixed(2)))}
-                      disabled={resultZoom >= 4}
-                      className="w-8 h-8 rounded-xl border border-slate-200 bg-white flex items-center justify-center disabled:opacity-40 cursor-pointer"
-                      title="Zoom in"
+                    <a
+                      href={result.url}
+                      download={getResultDownloadName()}
+                      onClick={handleDownloadResult}
+                      className="inline-flex items-center justify-center gap-2 px-8 sm:px-12 py-4 sm:py-5 bg-[#e5322d] hover:bg-[#c92a26] text-white rounded-2xl text-lg sm:text-xl font-bold shadow-lg shadow-rose-600/25 transition"
                     >
-                      <ZoomIn className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setResultZoom(1)}
-                      className="px-3 h-8 rounded-xl border border-slate-200 bg-white disabled:opacity-40 cursor-pointer"
-                    >
-                      Fit
-                    </button>
-                  </div>
-                  <div
-                    ref={resultBoxRef}
-                    onPointerDown={startResultPan}
-                    onPointerMove={moveResultPan}
-                    onPointerUp={endResultPan}
-                    onPointerCancel={endResultPan}
-                    className={`bg-white rounded-2xl border border-slate-200 p-3 shadow-inner overflow-auto h-[70vh] min-h-[420px] ${resultZoom > 1 ? 'cursor-grab active:cursor-grabbing' : ''}`}
-                  >
-                    <div className="min-w-full w-fit mx-auto flex justify-center">
-                      <img
-                        src={resultPreviewPages[resultPreviewIndex]?.dataUrl}
-                        alt={`Page ${resultPreviewIndex + 1}`}
-                        draggable={false}
-                        className="rounded-lg shadow-sm select-none"
-                        style={{
-                          height: `${Math.max(280, resultBoxH) * resultZoom}px`,
-                          width: 'auto',
-                          maxWidth: 'none',
-                          maxHeight: 'none',
-                        }}
-                      />
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-center gap-3 text-xs font-semibold text-slate-600">
-                    <button
-                      type="button"
-                      onClick={() => setResultPreviewIndex((i) => Math.max(0, i - 1))}
-                      disabled={resultPreviewIndex === 0}
-                      className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white disabled:opacity-40 cursor-pointer"
-                    >
-                      Previous page
-                    </button>
-                    <span>
-                      Page {resultPreviewIndex + 1} of {resultPreviewTotal || resultPreviewPages.length}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setResultPreviewIndex((i) => Math.min(resultPreviewPages.length - 1, i + 1))}
-                      disabled={resultPreviewIndex >= resultPreviewPages.length - 1}
-                      className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white disabled:opacity-40 cursor-pointer"
-                    >
-                      Next page
-                    </button>
-                  </div>
-                </div>
-              ) : docxEditText !== null ? (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-semibold text-slate-600 flex items-center gap-1.5">
-                      <Edit3 className="w-3.5 h-3.5 text-emerald-600" />
-                      Editable document — make changes, then download
-                    </span>
-                    <span className="text-slate-400">{docxEditText.split('\n').filter((l) => l.trim()).length} paragraphs</span>
-                  </div>
-                  <div className="bg-white rounded-2xl border border-slate-200 shadow-inner p-1">
-                    <textarea
-                      value={docxEditText}
-                      onChange={(e) => setDocxEditText(e.target.value)}
-                      spellCheck={false}
-                      className="w-full h-[60vh] min-h-[420px] p-6 text-sm text-slate-800 font-serif leading-relaxed resize-y outline-none rounded-xl"
-                    />
-                  </div>
-                </div>
-              ) : zipPreview ? (
-                <div className="space-y-4 text-left">
-                  {zipPreview.images.length > 0 && (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 max-h-[60vh] overflow-auto">
-                      {zipPreview.images.map((im) => (
-                        <figure key={im.name} className="bg-white border border-slate-200 rounded-xl p-2 shadow-sm">
-                          <img src={im.url} alt={im.name} className="w-full aspect-square object-contain rounded-lg" />
-                          <figcaption className="text-[10px] text-slate-500 font-semibold truncate mt-1.5 text-center" title={im.name}>
-                            {im.name}
-                          </figcaption>
-                        </figure>
+                      {isProcessing ? <Loader2 className="w-6 h-6 animate-spin" /> : <Download className="w-6 h-6" />}
+                      <span>{dlLabel}</span>
+                    </a>
+                    <div className="grid grid-cols-2 gap-1.5 shrink-0">
+                      {[
+                        [Share2, share, 'Share'],
+                        [Link2, copyLink, 'Copy site link'],
+                        [ExternalLink, openFile, 'Open in new tab'],
+                        [Trash2, discard, 'Discard & start over'],
+                      ].map(([Icon, fn, tip]) => (
+                        <button
+                          key={tip}
+                          onClick={fn}
+                          title={tip}
+                          className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-[#e5322d] hover:bg-[#c92a26] text-white flex items-center justify-center transition cursor-pointer"
+                        >
+                          <Icon className="w-4 h-4" />
+                        </button>
                       ))}
                     </div>
-                  )}
-                  {zipPreview.files.length > 0 && (
-                    <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-1.5 max-h-[40vh] overflow-auto">
-                      {zipPreview.files.map((f) => (
-                        <div key={f.name} className="flex items-center justify-between text-xs py-1 border-b border-slate-50 last:border-0">
-                          <span className="font-semibold text-slate-700 truncate flex items-center gap-2">
-                            <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                            {f.name}
-                          </span>
-                          {f.size != null && <span className="text-slate-400 shrink-0 ml-3">{formatFileSize(f.size)}</span>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <p className="text-[11px] text-slate-400 text-center">
-                    {zipPreview.images.length + zipPreview.files.length} file{(zipPreview.images.length + zipPreview.files.length) === 1 ? '' : 's'} inside the ZIP — this is exactly what you download.
-                  </p>
-                </div>
-              ) : (result.mime || '').startsWith('image/') || /\.(jpg|jpeg|png|webp|gif)$/i.test(result.filename || '') ? (
-                <img src={result.url} alt={result.filename} className="max-h-[70vh] mx-auto rounded-xl shadow-sm object-contain" />
-              ) : resultPreviewText || result.previewText ? (
-                <pre className="text-left text-xs text-slate-700 bg-white border border-slate-200 rounded-2xl p-4 max-h-[70vh] overflow-auto whitespace-pre-wrap">{resultPreviewText || result.previewText}</pre>
-              ) : (
-                <div className="py-16 space-y-3">
-                  <FileText className="w-14 h-14 text-slate-400 mx-auto" />
-                  <p className="text-sm font-semibold text-slate-700">{result.filename}</p>
-                  <p className="text-xs text-slate-400">Preview is ready as a downloadable file.</p>
-                </div>
-              )}
-            </div>
+                  </div>
 
-            {/* Output file details — always shown before download */}
-            <div className="rounded-2xl border border-slate-200 bg-white text-left overflow-hidden shadow-xs">
-              <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-100 flex items-center gap-2">
-                <Info className="w-3.5 h-3.5 text-slate-500" />
-                <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">File Details</span>
-              </div>
-              <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3 px-4 py-3.5 text-xs">
-                <div className="col-span-2 sm:col-span-3 min-w-0">
-                  <dt className="text-[10px] font-bold text-slate-400 uppercase">File name <span className="normal-case font-medium">(editable — extension kept)</span></dt>
-                  <dd>
-                    <input
-                      type="text"
-                      value={editedFileName ?? result.filename}
-                      onChange={(e) => setEditedFileName(e.target.value)}
-                      className="w-full mt-0.5 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-semibold text-slate-800 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/15 transition"
-                    />
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-[10px] font-bold text-slate-400 uppercase">Size</dt>
-                  <dd className="font-semibold text-slate-800">{formatFileSize(result.blob?.size)}</dd>
-                </div>
-                <div>
-                  <dt className="text-[10px] font-bold text-slate-400 uppercase">Format</dt>
-                  <dd className="font-semibold text-slate-800 uppercase">
-                    {(result.filename || '').split('.').pop() || result.mime || '—'}
-                  </dd>
-                </div>
-                {resultFileInfo?.pageCount != null && (
-                  <div>
-                    <dt className="text-[10px] font-bold text-slate-400 uppercase">Pages</dt>
-                    <dd className="font-semibold text-slate-800">{resultFileInfo.pageCount}</dd>
-                  </div>
-                )}
-                {resultFileInfo?.pageSize && (
-                  <div>
-                    <dt className="text-[10px] font-bold text-slate-400 uppercase">Page size</dt>
-                    <dd className="font-semibold text-slate-800">{resultFileInfo.pageSize}</dd>
-                  </div>
-                )}
-                {resultFileInfo && (
-                  <>
-                    {[
-                      ['title', 'Title'],
-                      ['author', 'Author'],
-                      ['subject', 'Subject'],
-                      ['keywords', 'Keywords'],
-                      ['creator', 'Creator'],
-                    ].map(([key, label]) => (
-                      <div key={key} className="min-w-0">
-                        <dt className="text-[10px] font-bold text-slate-400 uppercase">{label} <span className="normal-case font-medium">(editable)</span></dt>
-                        <dd>
-                          <input
-                            type="text"
-                            value={editedResultMeta[key] ?? resultFileInfo[key] ?? ''}
-                            onChange={(e) => setEditedResultMeta((p) => ({ ...p, [key]: e.target.value }))}
-                            placeholder="—"
-                            className="w-full mt-0.5 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-semibold text-slate-800 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/15 transition"
-                          />
-                        </dd>
+                  {tool?.id === 'compress' && result.originalSize && result.compressedSize && (
+                    <div className="inline-flex items-center gap-5 p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-xs">
+                      <div>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase">Original</p>
+                        <p className="font-bold text-slate-700">{formatFileSize(result.originalSize)}</p>
                       </div>
-                    ))}
-                  </>
-                )}
-                {[
-                  ['Producer', resultFileInfo?.producer],
-                  ['Created', resultFileInfo?.creationDate],
-                  ['Modified', resultFileInfo?.modificationDate],
-                ].filter(([, v]) => v).map(([label, v]) => (
-                  <div key={label} className="min-w-0">
-                    <dt className="text-[10px] font-bold text-slate-400 uppercase">{label}</dt>
-                    <dd className="font-semibold text-slate-800 truncate" title={v}>{v}</dd>
+                      <TrendingDown className="w-5 h-5 text-emerald-600" />
+                      <div>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase">Compressed</p>
+                        <p className="font-bold text-emerald-700">{formatFileSize(result.compressedSize)}</p>
+                      </div>
+                      <span className="bg-emerald-600 text-white px-2.5 py-1 rounded-lg text-xs font-extrabold">
+                        -{Math.max(0, Math.round(((result.originalSize - result.compressedSize) / result.originalSize) * 100))}%
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Continue to — suggested next tools */}
+                  {nextTools.length > 0 && (
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 sm:p-7 text-left">
+                      <h4 className="text-sm font-bold text-slate-800 mb-4">{t('res_continue')}</h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-1">
+                        {nextTools.map((nt) => (
+                          <button
+                            key={nt.id}
+                            onClick={() => onSwitchTool?.(nt.id)}
+                            className="flex items-center gap-3 py-2.5 group text-left cursor-pointer border-b border-slate-50 last:border-0"
+                          >
+                            <ToolGlyph icon={nt.icon} colorClass={nt.color} size={30} />
+                            <span className="flex-1 text-sm font-semibold text-slate-700 group-hover:text-rose-600 transition truncate">{toolName(nt)}</span>
+                            <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-rose-500 transition" />
+                          </button>
+                        ))}
+                      </div>
+                      <div className="text-right mt-3">
+                        <button
+                          onClick={onHome || onBack}
+                          className="text-xs font-bold text-slate-500 hover:text-rose-600 underline underline-offset-2 cursor-pointer"
+                        >
+                          {t('res_seemore')}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Spread the word */}
+                  <div className="pt-2">
+                    <h4 className="text-base font-black text-slate-900">{t('res_thanks')}</h4>
+                    <p className="mt-1 text-sm text-slate-500">{t('res_share')}</p>
+                    <div className="mt-4 flex flex-wrap justify-center gap-3">
+                      {shareLinks.map(([label, Icon, href]) => (
+                        <a
+                          key={label}
+                          href={href}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-2 bg-white border border-slate-200 rounded-xl px-5 py-2.5 text-sm font-bold text-slate-600 hover:border-slate-400 hover:text-slate-900 shadow-sm transition"
+                        >
+                          <Icon className="w-4 h-4" style={{ color: label === 'Trustpilot' ? '#00b67a' : label === 'Facebook' ? '#1877f2' : label === 'LinkedIn' ? '#0a66c2' : '#0f1419' }} />
+                          {label}
+                        </a>
+                      ))}
+                    </div>
                   </div>
-                ))}
-                {tool?.id === 'compress' && result.originalSize > 0 && result.compressedSize > 0 && (
-                  <div>
-                    <dt className="text-[10px] font-bold text-slate-400 uppercase">Space saved</dt>
-                    <dd className="font-semibold text-emerald-700">
-                      {formatFileSize(result.originalSize - result.compressedSize)} (
-                      {Math.max(0, Math.round(((result.originalSize - result.compressedSize) / result.originalSize) * 100))}%)
-                    </dd>
-                  </div>
-                )}
-              </dl>
-            </div>
+                </>
+              );
+            })()}
 
-            <div className="flex flex-col gap-3 pt-2">
-              <div className="flex flex-col sm:flex-row gap-3">
-                <button
-                  onClick={handleReconfigureSameFile}
-                  className="flex-1 py-3.5 border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 rounded-xl text-sm font-semibold transition flex items-center justify-center space-x-2 shadow-xs cursor-pointer"
-                >
-                  <SlidersHorizontal className="w-4 h-4 text-slate-500" />
-                  <span>Edit & Reconfigure</span>
-                </button>
-
-                <button onClick={onBack} className="flex-1 py-3.5 border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 rounded-xl text-sm font-semibold transition cursor-pointer">
-                  Return to Home
-                </button>
-              </div>
-
-              <a
-                href={result.url}
-                download={getResultDownloadName()}
-                onClick={handleDownloadResult}
-                className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md shadow-emerald-600/20 text-center flex items-center justify-center space-x-2 transition"
-              >
-                {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                <span>{docxEditText !== null ? 'Download Edited File' : 'Download File'}</span>
-              </a>
-            </div>
           </div>
         )}
       </main>

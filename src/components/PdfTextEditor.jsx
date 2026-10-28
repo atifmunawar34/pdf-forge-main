@@ -3,10 +3,11 @@ import {
   MousePointer2, Type, Highlighter, Eraser, Save,
   ZoomIn, ZoomOut, Loader2, X, Bold, Italic, Underline, Strikethrough,
   ChevronLeft, ChevronRight, PenTool, Ban,
-  Undo2, Redo2, FileText
+  Undo2, Redo2, Image as ImageIcon
 } from 'lucide-react';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
+import Logo from './Logo';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
@@ -50,13 +51,28 @@ const resolveFontInfo = (item, page, styles) => {
   const realFamily = realName.includes('+') ? realName.split('+').pop() : realName;
   const weight = cssInfo?.fontWeight != null ? parseFloat(cssInfo.fontWeight) : null;
   const angle = cssInfo?.italicAngle ? parseFloat(cssInfo.italicAngle) : 0;
-  const nameFlags = realName.replace(/[+\-_.,]/g, ' ');
-  const bold = !!f?.bold || (weight != null && weight >= 600) || /\b(bold|black|heavy|semibold|demi)\b/i.test(nameFlags);
+  // camel-split too — "TimesNewRomanPS-BoldMT" -> "... Bold MT", otherwise
+  // \b(bold)\b never matches inside "BoldMT" and bold fonts go undetected
+  const nameFlags = realName.replace(/[+\-_.,]/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+  const bold = !!f?.bold || (weight != null && weight >= 600) || /(bold|black|heavy|semibold|demi)/i.test(nameFlags);
   const italic = !!f?.italic || angle !== 0 || /(italic|oblique|slant)/i.test(nameFlags);
   const loaded = fontFaceLoaded(face) || fontFaceLoaded(loadedName);
 
+  // Turn PostScript names into real CSS families — "TimesNewRomanPS-BoldMT"
+  // isn't a valid family, so camel-split it and strip style/foundry suffixes:
+  // -> "Times New Roman". Without this the browser drops to sans-serif.
+  const pretty = realFamily
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/\b(PS|MT|BT|ITC|LT|Std|Pro|OS|Bold|Ital(ic)?|Oblique|Regular|Normal|Medium|Black|Heavy|Semi?bold|Demi|Light|Thin)\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  const serifGuess = /serif|roman|times|georgia|palatino|antiqua|garamond|cambria|book|nimbus|baskerville|century|minion|didot|bodoni/i.test(realName) && !/sans/i.test(realName);
+  const generic = serifGuess ? 'serif' : 'sans-serif';
+
   // embedded FontFace first, then the real family (if installed locally), then fallback
-  const family = `"${face}", "${realFamily}", "${fallback}", sans-serif`;
+  const family = [...new Set([face, loadedName, realFamily, pretty, fallback].filter(Boolean))]
+    .map((f) => `"${f}"`)
+    .join(', ') + `, ${generic}`;
   // If the embedded FontFace is loaded, its descriptors already carry the
   // weight/style — requesting extra weight would synthesize double-bold.
   const cssWeight = loaded ? (weight || 'normal') : (bold ? 'bold' : 'normal');
@@ -98,21 +114,34 @@ const sampleRectColors = (ctx, x, y, w, h, dpr = 1) => {
   let data;
   try { data = ctx.getImageData(sx, sy, sw, sh).data; } catch { return null; }
   const counts = new Map(), sums = new Map();
+  const bgCounts = new Map(), bgSums = new Map();
   const step = Math.max(4, Math.floor(data.length / 16000) * 4 || 4);
+  const mx = sw * 0.14, my = sh * 0.16;
   for (let i = 0; i + 2 < data.length; i += step) {
     const r = data[i], g = data[i + 1], b = data[i + 2];
     const key = `${r >> 5},${g >> 5},${b >> 5}`;
     counts.set(key, (counts.get(key) || 0) + 1);
     const s = sums.get(key) || [0, 0, 0];
     s[0] += r; s[1] += g; s[2] += b; sums.set(key, s);
+    // edge ring only → the page paper color; keeps dark glyphs/borders
+    // inside the rect from ever being mistaken for the background
+    const px = (i / 4) % sw, py = Math.floor(i / 4 / sw);
+    if (px < mx || px > sw - mx || py < my || py > sh - my) {
+      bgCounts.set(key, (bgCounts.get(key) || 0) + 1);
+      const es = bgSums.get(key) || [0, 0, 0];
+      es[0] += r; es[1] += g; es[2] += b; bgSums.set(key, es);
+    }
   }
-  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const bgMap = bgCounts.size ? bgCounts : counts;
+  const bgSumMap = bgCounts.size ? bgSums : sums;
+  const sorted = [...bgMap.entries()].sort((a, b) => b[1] - a[1]);
   if (!sorted.length) return null;
-  const avg = (key) => { const s = sums.get(key), c = counts.get(key); return [Math.round(s[0] / c), Math.round(s[1] / c), Math.round(s[2] / c)]; };
+  const avg = (key, m = bgSumMap, cMap = bgMap) => { const s = m.get(key), c = cMap.get(key); return [Math.round(s[0] / c), Math.round(s[1] / c), Math.round(s[2] / c)]; };
+  const avgAll = (key) => { const s = sums.get(key), c = counts.get(key); return [Math.round(s[0] / c), Math.round(s[1] / c), Math.round(s[2] / c)]; };
   const bg = avg(sorted[0][0]);
   let fg = null, bestDist = 90;
-  for (const [key] of sorted.slice(1)) {
-    const c = avg(key);
+  for (const [key] of [...counts.entries()].sort((a, b) => b[1] - a[1])) {
+    const c = avgAll(key);
     const d = Math.abs(c[0] - bg[0]) + Math.abs(c[1] - bg[1]) + Math.abs(c[2] - bg[2]);
     if (d > bestDist) { bestDist = d; fg = c; }
   }
@@ -188,7 +217,7 @@ function extractBlocks(textContent, viewport, page) {
   for (const it of items) {
     const line = lines.find(l =>
       Math.abs(l.baselineY - it.baselineY) < l.vFontH * 0.45 &&
-      it.vx - (l.vx + l.vw) < it.vFontH * 1.6 &&
+      it.vx - (l.vx + l.vw) < it.vFontH * 1.0 &&   // don't merge across cell-size gaps
       it.vx + it.vw > l.vx - it.vFontH
     );
     if (line) {
@@ -274,6 +303,9 @@ function extractBlocks(textContent, viewport, page) {
 // ---------- component ----------
 
 export default function PdfTextEditor({ file, onSave, onCancel }) {
+  // working copy of the uploaded file — image edits are previewed on canvas
+  // and applied at Save, so the file itself never changes mid-edit
+  const [curFile] = useState(file);
   const canvasRef = useRef(null);
   const scrollRef = useRef(null);
   const drawState = useRef({ drawing: false, erasing: false, pts: [], start: null });
@@ -299,6 +331,21 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   const [hoverId, setHoverId] = useState(null);
   const [eraseRect, setEraseRect] = useState(null); // live drag rect preview
   const [thumbs, setThumbs] = useState({}); // pageNum -> dataURL
+  const [pageImgs, setPageImgs] = useState({}); // pageNum -> [{xref, rect:[x0,y0,x1,y1]}]
+  const [activeImg, setActiveImg] = useState(null); // {xref, rect, vx, vy} — clicked image
+  const [imgGhost, setImgGhost] = useState(null); // {im, dx, dy} — live drag outline
+  // previewed image edits — applied on the canvas instantly, written to the
+  // PDF only when the user hits Save & Download. A mirrored ref is updated
+  // SYNCHRONOUSLY — rapid keypresses must see prior moves or they'd
+  // re-capture pixels from an already-erased spot (image goes blank).
+  const imgEditsRef = useRef({}); // pageNum -> [{key,xref,rect,curRect,kind,bmp,bg,file,imgEl}]
+  const [imgEdits, setImgEdits] = useState(imgEditsRef.current);
+  const imgInputRef = useRef(null); // hidden picker for the replacement image
+  const imgDrag = useRef(null);     // {im, sx, sy, dx, dy} — drag state
+  const imgOpRef = useRef(null);    // latest imageAction for window listeners
+  const imgKb = useRef({ dx: 0, dy: 0, im: null, t: null }); // pending arrow-key nudge
+  const repImgFiles = useRef([]); // replacement image files collected at payload build
+  const pageSnaps = useRef({});   // pageNum -> canvas snapshot taken before img edits
 
   // undo/redo history of pageData snapshots
   const history = useRef({ past: [], future: [] });
@@ -327,13 +374,15 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   const loadPdf = async () => {
     setIsRendering(true);
     try {
-      const buf = await file.arrayBuffer();
+      const buf = await curFile.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: buf, fontExtraProperties: true }).promise;
       setPdfDoc(pdf);
       setTotalPages(pdf.numPages);
       await renderPage(1, pdf);
       // lazily render sidebar thumbnails
       renderThumbs(pdf);
+      // image hotspots are detected per-page from pdf.js's OWN operator list
+      // in renderPage — those rects are exactly what the canvas painted
     } catch (e) {
       console.error('PDF load failed:', e);
     } finally {
@@ -401,8 +450,10 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
                 hl: prior.hl, redact: prior.redact, uline: prior.uline, strike: prior.strike,
                 color: prior.color, bgColor: prior.bgColor, textColor: prior.textColor,
                 fontOverride: prior.fontOverride, sizeOverride: prior.sizeOverride,
+                cBold: prior.cBold, cItalic: prior.cItalic,
                 hlColor: prior.hlColor, ulColor: prior.ulColor,
-                strikeColor: prior.strikeColor, redactColor: prior.redactColor }
+                strikeColor: prior.strikeColor, redactColor: prior.redactColor,
+                roomH: prior.roomH, drawnLines: prior.drawnLines }
             : b;
         });
         added = (old.added || []).map(a => ({
@@ -419,6 +470,14 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
         [pageNum]: { blocks: mergedBlocks, added, drawings, erasures, canvasW: logicalVp.width, canvasH: logicalVp.height },
       }));
       replayCanvasEdits(ctx, mergedBlocks, drawings, erasures, logicalVp);
+      // re-apply previewed image edits so moves/replaces survive re-renders
+      for (const e of (imgEditsRef.current[pageNum] || [])) replayImgEdit(ctx, e);
+      // detect image hotspots from the renderer's own op list (once per page)
+      if (!pageImgs[pageNum]) {
+        extractImgRects(page, logicalVp.height / scale).then(imgs => {
+          if (imgs.length) setPageImgs(prev => ({ ...prev, [pageNum]: imgs }));
+        });
+      }
       setCurrentPage(pageNum);
     } catch (e) {
       console.error('Render failed:', e);
@@ -429,23 +488,48 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
 
   // ---------- canvas paint ops (logical px, dpr transform already applied) ----------
 
+  // Cover glyphs with bg-coloured fills — per-ITEM rects (each pdf.js text
+  // chunk) so coverage hugs the text and never paints a slab across the gap
+  // / border between cells
   const whiteoutBlockCanvas = (ctx, b) => {
-    const pad = 2;
     ctx.fillStyle = b.bgColor ? rgbCss(b.bgColor) : '#ffffff';
-    ctx.fillRect(b.vx - pad, b.vy - pad, b.vw + pad * 2, Math.max(b.vh, b.vhDrawn || 0) + pad * 2);
+    for (const ln of (b.lines?.length ? b.lines : [b])) {
+      const items = ln.items?.length ? ln.items : [ln];
+      for (const it of items) {
+        const fh = it.vFontH || ln.vFontH || b.vFontH;
+        const padX = Math.max(1, fh * 0.06);
+        const padTop = Math.max(1, fh * 0.05);
+        // vy is the em-box top; baseline sits at vy + fh — cover only down to
+        // just under the baseline (deeper only for real descenders) so cell
+        // borders/underlines below the text stay intact
+        const hasDesc = /[gjpqy,;()[\]{}]/.test(it.str);
+        const bottom = it.vy + fh * (hasDesc ? 1.28 : 1.06);
+        ctx.fillRect(it.vx - padX, it.vy - padTop, it.vw + padX * 2, bottom - (it.vy - padTop));
+      }
+    }
+    // also erase where a previously committed replacement was drawn
+    if (b.edited && b.drawnLines?.length) {
+      for (const r of b.drawnLines) ctx.fillRect(r.x - 1.5, r.y - 1.5, r.w + 3, r.h + 3);
+    } else if (b.edited && b.vhDrawn) {
+      ctx.fillRect(b.vx - 1.5, b.vy - 1.5, b.vw + 3, b.vhDrawn + 3);
+    }
   };
 
   const drawBlockTextCanvas = (ctx, b, text) => {
     const fsPx = (b.sizeOverride ? b.sizeOverride * scale : b.vFontH) * 0.95;
-    const lh = b.lineH || fsPx * 1.22; // real leading measured from the PDF
     const fi = b.font || {};
     ctx.fillStyle = b.color || (b.textColor ? rgbCss(b.textColor) : '#000000');
     // real embedded font — weight/style live inside the FontFace itself;
-    // fontOverride switches to a chosen CSS family
+    // fontOverride switches to a chosen CSS family; cBold/cItalic are
+    // explicit toolbar toggles that win over the detected font style.
+    // Detection from the font NAME is authoritative — cssFontInfo weight can
+    // report 400 for subset fonts that are intrinsically bold.
+    const effW = b.cBold === undefined ? (fi.bold ? 'bold' : (fi.cssWeight || 'normal')) : (b.cBold ? 'bold' : 'normal');
+    const effS = b.cItalic === undefined ? (fi.italic ? 'italic' : (fi.cssStyle || 'normal')) : (b.cItalic ? 'italic' : 'normal');
     ctx.font = b.fontOverride
-      ? `${fsPx}px "${b.fontOverride}", sans-serif`
-      : `${fi.cssStyle && fi.cssStyle !== 'normal' ? fi.cssStyle + ' ' : ''}` +
-        `${fi.cssWeight && fi.cssWeight !== 'normal' ? fi.cssWeight + ' ' : ''}` +
+      ? `${effS === 'italic' ? 'italic ' : ''}${effW === 'bold' ? 'bold ' : ''}${fsPx}px "${b.fontOverride}", sans-serif`
+      : `${effS && effS !== 'normal' ? effS + ' ' : ''}` +
+        `${effW && effW !== 'normal' ? effW + ' ' : ''}` +
         `${fsPx}px ${fi.family || 'sans-serif'}`;
     const draftLines = text.split('\n');
     const origLines = b.lines || [];
@@ -454,27 +538,82 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     if (origLines.length > 1 && draftLines.length === origLines.length) {
       ctx.textBaseline = 'alphabetic';
       let maxY = 0;
+      const drawn = [];
       draftLines.forEach((ln, i) => {
         const ol = origLines[i];
         ctx.fillText(ln, ol.vx, ol.baselineY);
+        drawn.push({ x: ol.vx, y: ol.baselineY - (ol.vFontH || fsPx), w: ctx.measureText(ln).width, h: (ol.vFontH || fsPx) * 1.2 });
         maxY = Math.max(maxY, ol.vy + ol.vh);
       });
+      b.drawnLines = drawn;
       b.vhDrawn = Math.max(0, maxY - b.vy);
       return;
     }
     ctx.textBaseline = 'top';
-    const words = text.split(/\s+/);
-    let line = '';
+    const lhRatio = b.lineH && b.vFontH ? b.lineH / b.vFontH : 1.22;
+    // free vertical room inside the cell — space down to the next block
+    const room = b.roomH || b.vh * 1.2;
+    const origFsPx = fsPx;
+    let fitFs = fsPx;
+    let fitLh;
+    const setFont = () => {
+      const w = b.cBold === undefined ? (fi.bold ? 'bold' : (fi.cssWeight || 'normal')) : (b.cBold ? 'bold' : 'normal');
+      const s = b.cItalic === undefined ? (fi.italic ? 'italic' : (fi.cssStyle || 'normal')) : (b.cItalic ? 'italic' : 'normal');
+      ctx.font = b.fontOverride
+        ? `${s === 'italic' ? 'italic ' : ''}${w === 'bold' ? 'bold ' : ''}${fitFs}px "${b.fontOverride}", sans-serif`
+        : `${s && s !== 'normal' ? s + ' ' : ''}` +
+          `${w && w !== 'normal' ? w + ' ' : ''}` +
+          `${fitFs}px ${fi.family || 'sans-serif'}`;
+    };
+    const wrapLines = () => {
+      const words = text.split(/\s+/).flatMap((w) => {
+        // hard-break single words wider than the box — no sideways spill
+        if (ctx.measureText(w).width <= b.vw) return [w];
+        const parts = [];
+        let cur = '';
+        for (const ch of w) {
+          if (cur && ctx.measureText(cur + ch).width > b.vw) { parts.push(cur); cur = ch; }
+          else cur += ch;
+        }
+        if (cur) parts.push(cur);
+        return parts;
+      });
+      const out = [];
+      let line = '';
+      for (const w of words) {
+        const trial = line ? `${line} ${w}` : w;
+        if (line && ctx.measureText(trial).width > b.vw) { out.push(line); line = w; }
+        else line = trial;
+      }
+      if (line) out.push(line);
+      return out;
+    };
+    // FIT the cell: prefer shrinking so the draft stays on ONE line; only
+    // when a single line would be too small (<50%) do we wrap — then keep
+    // shrinking until the wrapped lines fit inside the cell's free room,
+    // so nothing lands on the border or the box below
+    let lines;
+    for (;;) {
+      setFont();
+      fitLh = fitFs * lhRatio;
+      lines = wrapLines();
+      if (lines.length === 1) break;
+      if (!text.includes('\n') && fitFs > origFsPx * 0.5) { fitFs *= 0.93; continue; }
+      if (lines.length * fitLh <= room || fitFs <= origFsPx * 0.35) break;
+      fitFs *= 0.9;
+    }
+    // draw from the ORIGINAL top position — lines grow downward inside the
+    // cell's room (already shrunk to fit) and can never slide into the
+    // row below
+    const drawn = [];
     let y = b.vy;
     let maxY = y;
-    for (const w of words) {
-      const trial = line ? `${line} ${w}` : w;
-      if (line && ctx.measureText(trial).width > b.vw) {
-        ctx.fillText(line, b.vx, y);
-        y += lh; line = w;
-      } else line = trial;
+    for (const ln of lines) {
+      ctx.fillText(ln, b.vx, y);
+      drawn.push({ x: b.vx, y, w: ctx.measureText(ln).width, h: fitLh });
+      y += fitLh; maxY = y;
     }
-    if (line) { ctx.fillText(line, b.vx, y); maxY = y + lh; }
+    b.drawnLines = drawn;
     b.vhDrawn = maxY - b.vy;
   };
 
@@ -643,6 +782,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
         bold: b.font?.bold || false, italic: b.font?.italic || false, underline: false,
         color: b.color || (b.textColor ? rgbToHex(b.textColor) : '#000000'),
         colorTouched: !!b.color, fontTouched: !!b.fontOverride, sizeTouched: !!b.sizeOverride,
+        boldTouched: b.cBold !== undefined, italicTouched: b.cItalic !== undefined,
       }));
       // snapshot the pixels BEFORE whiting out — cancel restores them instantly
       const pad = 2;
@@ -711,10 +851,23 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     const color = fmt.colorTouched ? fmt.color : b.color;
     const fontOverride = fmt.fontTouched ? fmt.family : b.fontOverride;
     const sizeOverride = fmt.sizeTouched ? fmt.fontSize : b.sizeOverride;
-    const nb = { ...b, edited: true, text: draft, color, fontOverride, sizeOverride };
+    const cBold = fmt.boldTouched ? fmt.bold : b.cBold;
+    const cItalic = fmt.italicTouched ? fmt.italic : b.cItalic;
+    // measure the free vertical room inside the cell — space from the text
+    // down to the next block below it — so wrapped replacement text stays
+    // inside its own box and never lands on the cell under it
+    const pd = getCur();
+    let belowTop = Infinity;
+    for (const ob of pd.blocks) {
+      if (ob.id === id) continue;
+      const overlap = Math.min(b.vx + b.vw, ob.vx + ob.vw) - Math.max(b.vx, ob.vx);
+      if (ob.vy > b.vy + b.vFontH * 0.4 && overlap > b.vw * 0.3) belowTop = Math.min(belowTop, ob.vy);
+    }
+    const roomH = belowTop === Infinity ? b.vh * 1.2 : Math.max(b.vh, belowTop - b.vy - 2);
+    const nb = { ...b, edited: true, text: draft, color, fontOverride, sizeOverride, cBold, cItalic, roomH };
     whiteoutBlockCanvas(ctx, nb);
     if (draft.trim()) drawBlockTextCanvas(ctx, nb, draft);
-    updateBlock(id, { edited: true, text: draft, color, fontOverride, sizeOverride, vhDrawn: nb.vhDrawn });
+    updateBlock(id, { edited: true, text: draft, color, fontOverride, sizeOverride, cBold, cItalic, roomH, drawnLines: nb.drawnLines, vhDrawn: nb.vhDrawn });
     setActiveEdit(null);
   };
 
@@ -732,7 +885,8 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   };
 
   const handleCanvasClick = (e) => {
-    if (mode !== 'add') { if (mode !== 'draw' && mode !== 'erase') cancelEdit(); return; }
+    if (mode === 'image') { setActiveImg(null); return; }
+    if (mode !== 'add') { if (mode !== 'draw' && mode !== 'erase') { setActiveImg(null); cancelEdit(); } return; }
     const { x, y } = canvasPos(e);
     const p = toPdf(x, y);
     setPendingAdd({ vx: x, vy: y, pdfX: p.x, pdfY: p.y - fmt.fontSize * 0.8 });
@@ -882,6 +1036,320 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
     setEraseRect(null);
   };
 
+  // ---------- image editing ----------
+  // Detect where each image is ACTUALLY painted by walking pdf.js's operator
+  // list — the exact transform the renderer used. This matches the canvas
+  // pixel-for-pixel (backend get_image_info rects don't, which caused
+  // slivers/mis-sized boxes). Y is flipped to our top-left convention.
+  const extractImgRects = async (page, pdfH) => {
+    try {
+      const OPS = pdfjsLib.OPS;
+      const ops = await page.getOperatorList();
+      const paintOps = [OPS.paintImageXObject, OPS.paintJpegXObject, OPS.paintInlineImageXObject,
+        OPS.paintImageXObjectRepeat, OPS.paintImageMaskXObject, OPS.paintImageMaskXObjectGroup];
+      let ctm = [1, 0, 0, 1, 0, 0];
+      const stack = [];
+      const mul = (a, b) => [
+        a[0] * b[0] + a[2] * b[1], a[1] * b[0] + a[3] * b[1],
+        a[0] * b[2] + a[2] * b[3], a[1] * b[2] + a[3] * b[3],
+        a[0] * b[4] + a[2] * b[5] + a[4], a[1] * b[4] + a[3] * b[5] + a[5]];
+      const imgs = [];
+      for (let i = 0; i < ops.fnArray.length; i++) {
+        const fn = ops.fnArray[i];
+        const args = ops.argsArray[i];
+        if (fn === OPS.save) stack.push([...ctm]);
+        else if (fn === OPS.restore) ctm = stack.pop() || ctm;
+        else if (fn === OPS.transform) ctm = mul(ctm, args);
+        else if (paintOps.includes(fn)) {
+          // unit square through the CTM = the painted rect (pdf units, y-up)
+          const pts = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([x, y]) => [
+            x * ctm[0] + y * ctm[2] + ctm[4], x * ctm[1] + y * ctm[3] + ctm[5]]);
+          const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+          const x0 = Math.min(...xs), x1 = Math.max(...xs);
+          const y0 = pdfH - Math.max(...ys), y1 = pdfH - Math.min(...ys);
+          if (x1 - x0 >= 4 && y1 - y0 >= 4) imgs.push({ xref: 0, rect: [x0, y0, x1, y1], objId: args?.[0] });
+        }
+      }
+      return imgs;
+    } catch { return []; }
+  };
+  // Preview ops: instant canvas changes (no server round-trip). The records
+  // are sent with the normal edits payload at Save & Download time.
+  const imgKey = (im) => `${im.xref}:${im.rect.map(v => Math.round(v)).join(',')}`;
+
+  // products drawn as stacked images (overlapping rects) become ONE hotspot —
+  // rects now come from the renderer itself so they cover the whole picture;
+  // no proximity guessing that could chain-merge a column
+  const groupImgs = (list) => {
+    const groups = [];
+    for (const im of list) {
+      const g = groups.find(gr => {
+        const a = gr.rect, b = im.rect;
+        const iw = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0]));
+        const ih = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+        const inter = iw * ih;
+        if (!inter) return false;
+        const areaA = (a[2] - a[0]) * (a[3] - a[1]);
+        const areaB = (b[2] - b[0]) * (b[3] - b[1]);
+        return inter > 0.3 * Math.min(areaA, areaB);
+      });
+      if (g) {
+        g.rect = [Math.min(g.rect[0], im.rect[0]), Math.min(g.rect[1], im.rect[1]),
+          Math.max(g.rect[2], im.rect[2]), Math.max(g.rect[3], im.rect[3])];
+        g.imgs.push(im);
+      } else {
+        groups.push({ rect: [...im.rect], imgs: [im] });
+      }
+    }
+    return groups;
+  };
+
+  // full-page snapshot (device px) taken before the first image edit —
+  // restoring a region from it brings back table lines/text under the image
+  const ensurePageSnap = () => {
+    const canvas = canvasRef.current;
+    const s = pageSnaps.current[currentPage];
+    if (s && s.width === canvas.width && s.height === canvas.height) return s;
+    const c = document.createElement('canvas');
+    c.width = canvas.width;
+    c.height = canvas.height;
+    c.getContext('2d').drawImage(canvas, 0, 0);
+    pageSnaps.current[currentPage] = c;
+    return c;
+  };
+
+  // split a captured box into product pixels vs straight border-line pixels.
+  // A row/column that is ≥65% non-background is a table line — those are
+  // NEVER moved or erased.
+  //   prodBmp  = product only (bg + line px transparent) — drawn at new spot
+  //   keepMask = line px only, everything else transparent — painted AFTER a
+  //              solid fill to put borders back exactly
+  const analyzeBmp = (bmp, bg) => {
+    const w = bmp.width, h = bmp.height;
+    const [r, g, b] = bg;
+    const src = bmp.getContext('2d').getImageData(0, 0, w, h);
+    const prod = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+      const o = i * 4;
+      const dr = src.data[o] - r, dg = src.data[o + 1] - g, db = src.data[o + 2] - b;
+      prod[i] = (dr * dr + dg * dg + db * db > 676) ? 1 : 0;
+    }
+    const rowLine = new Uint8Array(h), colLine = new Uint8Array(w);
+    for (let y = 0; y < h; y++) { let n = 0; for (let x = 0; x < w; x++) n += prod[y * w + x]; if (n > w * 0.65) rowLine[y] = 1; }
+    for (let x = 0; x < w; x++) { let n = 0; for (let y = 0; y < h; y++) n += prod[y * w + x]; if (n > h * 0.65) colLine[x] = 1; }
+
+    const prodBmp = document.createElement('canvas');
+    prodBmp.width = w; prodBmp.height = h;
+    const pc = prodBmp.getContext('2d');
+    pc.drawImage(bmp, 0, 0);
+    const pd = pc.getImageData(0, 0, w, h);
+    const km = document.createElement('canvas');
+    km.width = w; km.height = h;
+    const kc = km.getContext('2d');
+    const kd = kc.createImageData(w, h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x, o = i * 4;
+        const isLine = rowLine[y] || colLine[x];
+        if (!prod[i] || isLine) pd.data[o + 3] = 0;   // prodBmp: product only
+        if (prod[i] && isLine) {                       // keepMask: lines only
+          kd.data[o] = src.data[o]; kd.data[o + 1] = src.data[o + 1];
+          kd.data[o + 2] = src.data[o + 2]; kd.data[o + 3] = 255;
+        }
+      }
+    }
+    pc.putImageData(pd, 0, 0);
+    kc.putImageData(kd, 0, 0);
+    return { prodBmp, keepMask: km };
+  };
+
+  // grab a rect out of the page snapshot as its own offscreen canvas
+  const snapRegion = (snap, rectPdf) => {
+    const w = Math.max(1, Math.round((rectPdf[2] - rectPdf[0]) * scale * dpr));
+    const h = Math.max(1, Math.round((rectPdf[3] - rectPdf[1]) * scale * dpr));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(snap,
+      Math.round(rectPdf[0] * scale * dpr), Math.round(rectPdf[1] * scale * dpr), w, h, 0, 0, w, h);
+    return c;
+  };
+
+  // erase an image box WITHOUT touching borders/text:
+  // 1) solid bg fill — nothing can ghost
+  // 2) paint back ONLY the detected line pixels from the snapshot
+  const eraseImgBox = (ctx, snap, rectPdf, bg) => {
+    const [x0, y0, x1, y1] = rectPdf;
+    ctx.fillStyle = rgbCss(bg);
+    ctx.fillRect(x0 * scale, y0 * scale, (x1 - x0) * scale, (y1 - y0) * scale);
+    const km = analyzeBmp(snapRegion(snap, rectPdf), bg).keepMask;
+    ctx.drawImage(km, x0 * scale, y0 * scale, (x1 - x0) * scale, (y1 - y0) * scale);
+  };
+
+  // apply a live image edit on the canvas and record it for save
+  const previewImgEdit = (kind, im, extra = {}) => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const list = imgEditsRef.current[currentPage] || [];
+    const prior = list.find(e => e.key === imgKey(im));
+    const curRect = prior?.curRect || im.rect;
+    const snap = ensurePageSnap();
+    // images often render outside their reported bbox — start with a small
+    // pad and EXPAND the capture until no product pixel touches the edge
+    // (up to ~48u), otherwise slivers get left behind
+    const padRect = (r, p) => [r[0] - p, r[1] - p, r[2] + p, r[3] + p];
+
+    let bmp = prior?.bmp;
+    let bmpRect = prior?.bmpRect;
+    let bg = prior?.bg;
+    if (!bmp) {
+      // rect comes straight from the renderer — the box IS the whole image;
+      // a 2-unit pad covers antialiased edges only
+      bmpRect = padRect(im.rect, 2);
+      bg = sampleRectColors(ctx, im.rect[0] * scale - 2, im.rect[1] * scale - 2,
+        (im.rect[2] - im.rect[0]) * scale + 4, (im.rect[3] - im.rect[1]) * scale + 4, dpr)?.bg || [255, 255, 255];
+      bmp = analyzeBmp(snapRegion(snap, bmpRect), bg).prodBmp;
+    }
+    bg = bg || [255, 255, 255];
+    const fullRect = bmpRect || padRect(im.rect, 2);
+
+    // erase: solid fill + border repaint over the FULL product area at both
+    // the original spot and the currently-occupied spot — no ghosts/slivers
+    eraseImgBox(ctx, snap, padRect(fullRect, 2), bg);
+    if (curRect !== im.rect) eraseImgBox(ctx, snap, padRect(curRect, 6), bg);
+
+    const rec = { ...(prior || { key: imgKey(im), xref: im.xref, rect: im.rect, members: im.imgs }), bmp, bg, bmpRect, ...extra };
+    // 'del' always wins; a moved 'rep' stays a replace at the new spot;
+    // a moved 'del' stays deleted
+    rec.kind = kind === 'del' ? 'del' : (prior?.kind === 'rep' || prior?.kind === 'del' ? prior.kind : kind);
+    if (kind === 'move' && extra.newRect) {
+      rec.curRect = extra.newRect;
+      const [x0, y0, x1, y1] = extra.newRect;
+      // bmp was captured at bmpRect (padded/expanded) — draw it shifted by
+      // that offset so the product lands exactly where the outline sits
+      const ox = (bmpRect ? bmpRect[0] - im.rect[0] : 0) * scale;
+      const oy = (bmpRect ? bmpRect[1] - im.rect[1] : 0) * scale;
+      // bmp was captured at bmpRect — draw at the new spot plus that offset
+      const dw = bmpRect ? (bmpRect[2] - bmpRect[0]) * scale : (x1 - x0) * scale;
+      const dh = bmpRect ? (bmpRect[3] - bmpRect[1]) * scale : (y1 - y0) * scale;
+      ctx.drawImage(rec.imgEl || bmp, x0 * scale + ox, y0 * scale + oy, dw, dh);
+    } else if (kind === 'rep' && extra.imgEl) {
+      ctx.drawImage(extra.imgEl, curRect[0] * scale, curRect[1] * scale,
+        (curRect[2] - curRect[0]) * scale, (curRect[3] - curRect[1]) * scale);
+    }
+    // 'del' = erase only
+    const upd = (prev) => ({
+      ...prev,
+      [currentPage]: [...(prev[currentPage] || []).filter(e => e.key !== rec.key), rec],
+    });
+    imgEditsRef.current = upd(imgEditsRef.current);
+    setImgEdits(upd);
+  };
+
+  // re-apply a previewed image edit after a full page re-render
+  const replayImgEdit = (ctx, e) => {
+    const snap = ensurePageSnap();
+    const padRect = (r, p) => [r[0] - p, r[1] - p, r[2] + p, r[3] + p];
+    eraseImgBox(ctx, snap, padRect(e.bmpRect || e.rect, 2), e.bg || [255, 255, 255]);
+    if (e.curRect && e.curRect !== e.rect) eraseImgBox(ctx, snap, padRect(e.curRect, 6), e.bg || [255, 255, 255]);
+    if (e.kind === 'rep' && e.imgEl) {
+      const [cx0, cy0, cx1, cy1] = e.curRect || e.rect;
+      ctx.drawImage(e.imgEl, cx0 * scale, cy0 * scale, (cx1 - cx0) * scale, (cy1 - cy0) * scale);
+    } else if (e.kind === 'move' && e.curRect && e.bmp) {
+      const [cx0, cy0] = e.curRect;
+      const ox = (e.bmpRect ? e.bmpRect[0] - e.rect[0] : 0) * scale;
+      const oy = (e.bmpRect ? e.bmpRect[1] - e.rect[1] : 0) * scale;
+      const dw = e.bmpRect ? (e.bmpRect[2] - e.bmpRect[0]) * scale : (e.rect[2] - e.rect[0]) * scale;
+      const dh = e.bmpRect ? (e.bmpRect[3] - e.bmpRect[1]) * scale : (e.rect[3] - e.rect[1]) * scale;
+      ctx.drawImage(e.bmp, cx0 * scale + ox, cy0 * scale + oy, dw, dh);
+    }
+  };
+
+  // keep latest preview helper reachable from global drag listeners
+  imgOpRef.current = previewImgEdit;
+
+  // image drag — window-level listeners so the drag survives pointer leaving
+  // the hotspot; ghost outline follows the mouse, real move happens on release
+  useEffect(() => {
+    const mv = (e) => {
+      const d = imgDrag.current;
+      if (!d) return;
+      d.dx = e.clientX - d.sx;
+      d.dy = e.clientY - d.sy;
+      setImgGhost({ im: d.im, dx: d.dx, dy: d.dy });
+    };
+    const up = () => {
+      const d = imgDrag.current;
+      imgDrag.current = null;
+      setImgGhost(null);
+      if (d && (Math.abs(d.dx) > 3 || Math.abs(d.dy) > 3)) {
+        const [x0, y0, x1, y1] = d.im.rect;
+        imgOpRef.current?.('move', d.im, {
+          newRect: [x0 + d.dx / scale, y0 + d.dy / scale, x1 + d.dx / scale, y1 + d.dy / scale],
+        });
+      }
+    };
+    window.addEventListener('mousemove', mv);
+    window.addEventListener('mouseup', up);
+    return () => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); };
+  }, [scale]);
+
+  // ---------- keyboard shortcuts ----------
+  // ← → ↑ ↓ : nudge selected image (hold Shift for 10× step) — ghost moves
+  //           live, one backend call after the presses settle
+  // ← →     : previous / next page (when no image is selected)
+  // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y : undo / redo
+  // Ctrl+S : save & download
+  // Enter in an edit box : apply (Shift+Enter = newline), Esc : cancel
+  // P E T I H R U S D X : Pointer / Edit / Add text / Image / Highlight /
+  //                       Redact / Underline / Strikeout / Draw / Eraser
+  // + -   : zoom in / out,  Delete/Backspace : remove selected image
+  useEffect(() => {
+    const onKey = (e) => {
+      const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+
+      // arrow-key nudge for the selected image — the pixels move on EVERY
+      // press (pure canvas op, instant); holding the key slides it
+      if (!inField && activeImg && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+        e.preventDefault();
+        const kb = imgKb.current;
+        if (kb.im !== activeImg) { kb.im = activeImg; kb.dx = kb.dy = 0; }
+        const step = (e.shiftKey ? 10 : 1) / scale; // pdf units
+        if (e.key === 'ArrowLeft') kb.dx -= step;
+        else if (e.key === 'ArrowRight') kb.dx += step;
+        else if (e.key === 'ArrowUp') kb.dy -= step;
+        else kb.dy += step;
+        const [x0, y0, x1, y1] = kb.im.rect;
+        previewImgEdit('move', kb.im, {
+          newRect: [x0 + kb.dx, y0 + kb.dy, x1 + kb.dx, y1 + kb.dy],
+        });
+        return;
+      }
+
+      if (inField) return;
+      const mod = e.ctrlKey || e.metaKey;
+      const k = e.key.toLowerCase();
+      if (mod && !e.shiftKey && k === 'z') { e.preventDefault(); undo(); }
+      else if (mod && (k === 'y' || (e.shiftKey && k === 'z'))) { e.preventDefault(); redo(); }
+      else if (mod && k === 's') { e.preventDefault(); handleSave(); }
+      else if (mod || e.altKey) { return; }
+      else if (k === 'arrowleft' || e.key === 'PageUp') { e.preventDefault(); renderPage(currentPage - 1); }
+      else if (k === 'arrowright' || e.key === 'PageDown') { e.preventDefault(); renderPage(currentPage + 1); }
+      else if ((k === 'delete' || k === 'backspace') && activeImg) { e.preventDefault(); previewImgEdit('del', activeImg); setActiveImg(null); }
+      else if (k === '+' || k === '=') setScale(s => Math.min(3, s + 0.15));
+      else if (k === '-') setScale(s => Math.max(0.5, s - 0.15));
+      else {
+        const toolMap = {
+          p: 'pointer', e: 'edit', t: 'add', i: 'image', h: 'highlight',
+          r: 'redact', u: 'underline', s: 'strikeout', d: 'draw', x: 'erase',
+        };
+        if (toolMap[k]) handleModeChange(toolMap[k]);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeImg, currentPage, scale]);
+
   // ---------- save ----------
   // Build the edits payload — all coords converted to PDF units with
   // TOP-LEFT origin (viewport px / scale == PyMuPDF coordinates).
@@ -909,8 +1377,12 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
             // x/baseline when line count matches (keeps indents & alignment)
             lines: (b.lines || []).map(l => [l.vx / scale, l.baselineY / scale]),
             fontSize: b.sizeOverride || b.pdfFs, maxWidth: b.vw / scale,
+            // free room inside the cell — backend shrinks wrapped text to fit
+            maxH: b.roomH ? b.roomH / scale : null,
             font: b.font?.realName || '',
             family: b.fontOverride || null,
+            bold: b.cBold ?? null,
+            italic: b.cItalic ?? null,
             bg: bg255,
             color: fg255,
             lineHeight: (b.lineH || b.vFontH * 1.22) / (scale * b.pdfFs),
@@ -949,6 +1421,26 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
         }
         edits.push({ action: 'draw', segments, color: c255(s.color || '#dc2626'), width: (s.width || 2) / scale });
       }
+      // previewed image edits — go with the same payload; replacement files
+      // travel as separate form fields (imgIdx indexes into them)
+      for (const e of (imgEdits[parseInt(pno, 10)] || [])) {
+        if (e.kind === 'move') {
+          // grouped products move member-by-member — same shift for all
+          const dx = e.curRect[0] - e.rect[0], dy = e.curRect[1] - e.rect[1];
+          const members = e.members?.length ? e.members : [{ xref: e.xref, rect: e.rect }];
+          for (const m of members) {
+            edits.push({
+              action: 'imgmove', xref: m.xref, rect: m.rect,
+              new: [m.rect[0] + dx, m.rect[1] + dy, m.rect[2] + dx, m.rect[3] + dy],
+            });
+          }
+        } else if (e.kind === 'del') {
+          edits.push({ action: 'imgdel', xref: e.xref, rect: e.rect });
+        } else if (e.kind === 'rep' && e.file) {
+          repImgFiles.current.push(e.file);
+          edits.push({ action: 'imgreplace', xref: e.xref, rect: e.curRect || e.rect, imgIdx: repImgFiles.current.length - 1 });
+        }
+      }
       if (edits.length) pages[pno] = { edits };
     }
     return { pages };
@@ -957,9 +1449,12 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   const handleSave = async () => {
     setSaving(true);
     try {
+      repImgFiles.current = [];
+      const payload = buildEditsPayload();
       const fd = new FormData();
-      fd.append('file', file);
-      fd.append('edits', JSON.stringify(buildEditsPayload()));
+      fd.append('file', curFile);
+      fd.append('edits', JSON.stringify(payload));
+      repImgFiles.current.forEach(f => fd.append('imgs', f));
       const res = await fetch('/api/edit-pdf-text', { method: 'POST', body: fd });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -977,7 +1472,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
 
   // Fallback: client-side save via pdf-lib (standard fonts only)
   const saveWithPdfLib = async () => {
-    const buf = await file.arrayBuffer();
+    const buf = await curFile.arrayBuffer();
     const doc = await PDFDocument.load(buf);
     const fonts = {
       'Helvetica': await doc.embedFont(StandardFonts.Helvetica),
@@ -1039,10 +1534,16 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
           });
           if (b.text?.trim()) {
             const flags = parseFontFlags(b.font?.realName || '');
-            const font = pick(b.font?.bold ?? flags.bold, b.font?.italic ?? flags.italic, flags.pdfFamily);
-            const fs = b.sizeOverride || b.pdfFs;
-            const lh = b.lineH ? b.lineH / scale : fs * 1.22;
-            const wrapped = wrapText(b.text, font, fs, b.vw / scale);
+            const font = pick(b.cBold ?? b.font?.bold ?? flags.bold, b.cItalic ?? b.font?.italic ?? flags.italic, flags.pdfFamily);
+            let fs = b.sizeOverride || b.pdfFs;
+            let lh = b.lineH ? b.lineH / scale : fs * 1.22;
+            let wrapped = wrapText(b.text, font, fs, b.vw / scale);
+            // shrink so the wrapped text stays inside the cell's free room
+            const room = b.roomH ? b.roomH / scale : null;
+            while (room && wrapped.length * lh > room && fs > (b.sizeOverride || b.pdfFs) * 0.35) {
+              fs *= 0.9; lh = b.lineH ? fs * (b.lineH / (scale * b.pdfFs)) : fs * 1.22;
+              wrapped = wrapText(b.text, font, fs, b.vw / scale);
+            }
             const c = hexToRgb(b.color || '#000000');
             const draftLines = b.text.split('\n');
             if (b.lines?.length > 1 && draftLines.length === b.lines.length) {
@@ -1128,7 +1629,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   const firstScale = useRef(true);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { const t = setTimeout(loadPdf, 0); return () => clearTimeout(t); }, [file]);
+  useEffect(() => { const t = setTimeout(loadPdf, 0); return () => clearTimeout(t); }, [curFile]);
 
   // keyboard shortcuts: Cmd/Ctrl+Z undo, Cmd+Shift+Z / Ctrl+Y redo
   useEffect(() => {
@@ -1160,25 +1661,67 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
   const cur = getCur();
   const activeBlock = activeEdit?.type === 'block' ? cur.blocks.find(b => b.id === activeEdit.id) : null;
 
-  // Edit box geometry — wide enough that every original line fits on one
-  // visual line (no reflow), tall enough for the wrapped result
-  let taW = 140, taH = 24;
+  // Edit box geometry — pinned to the original cell width so the box never
+  // grows past the cell edge / gets clipped under the container side;
+  // the draft wraps inside (wordBreak). The font shrinks the same way the
+  // committed render does so a long draft stays INSIDE the cell's free room
+  // instead of the box crossing the line into the row below
+  let taW = 140, taH = 24, taFs = 12, taLh = 15;
   if (activeBlock) {
     const fi = activeBlock.font || {};
-    const fs = activeBlock.vFontH;
-    const pad = 14;
-    const lines = (activeEdit.draft || '').split('\n');
-    const longest = Math.max(activeBlock.vw, ...lines.map(l => measureW(l || ' ', fi, fs)));
-    taW = longest + pad;
+    const baseFs = fmt.sizeTouched ? fmt.fontSize * scale : activeBlock.vFontH;
+    taW = activeBlock.vw + 10;
     const contentW = taW - 10; // textarea padding + border allowance
-    const dispLines = lines.reduce((n, l) =>
-      n + Math.max(1, Math.ceil(measureW(l || ' ', fi, fs) / Math.max(1, contentW))), 0);
-    taH = Math.max(activeBlock.vh + 6, dispLines * (activeBlock.lineH || fs * 1.22) + 8);
+    // free vertical room inside the cell — space down to the next block
+    let belowTop = Infinity;
+    for (const ob of cur.blocks) {
+      if (ob.id === activeBlock.id) continue;
+      const ov = Math.min(activeBlock.vx + activeBlock.vw, ob.vx + ob.vw) - Math.max(activeBlock.vx, ob.vx);
+      if (ob.vy > activeBlock.vy + activeBlock.vFontH * 0.4 && ov > activeBlock.vw * 0.3) belowTop = Math.min(belowTop, ob.vy);
+    }
+    const room = belowTop === Infinity ? activeBlock.vh * 1.2 : Math.max(activeBlock.vh, belowTop - activeBlock.vy - 2);
+    const lhRatio = activeBlock.lineH && activeBlock.vFontH ? activeBlock.lineH / activeBlock.vFontH : 1.22;
+    const draft = activeEdit.draft || '';
+    const fullFs = baseFs * 0.95;
+    let fsPx = fullFs;
+    const countLines = (fp) => {
+      const words = draft.split(/\s+/).flatMap((w) => {
+        if (measureW(w, fi, fp) <= contentW) return [w];
+        const parts = [];
+        let cur = '';
+        for (const ch of w) {
+          if (cur && measureW(cur + ch, fi, fp) > contentW) { parts.push(cur); cur = ch; }
+          else cur += ch;
+        }
+        if (cur) parts.push(cur);
+        return parts;
+      });
+      let n = 0, line = '';
+      for (const w of words) {
+        const trial = line ? `${line} ${w}` : w;
+        if (line && measureW(trial, fi, fp) > contentW) { n++; line = w; }
+        else line = trial;
+      }
+      return Math.max(n + (line ? 1 : 0), 1);
+    };
+    let n = countLines(fsPx);
+    while (n > 1 && fsPx > fullFs * 0.35) {
+      // prefer keeping it on one line; once wrapping is unavoidable keep
+      // shrinking until the wrapped lines fit inside the cell's room
+      if (!draft.includes('\n') && fsPx > fullFs * 0.5) { fsPx *= 0.93; }
+      else if (n * fsPx * lhRatio > room) { fsPx *= 0.9; }
+      else break;
+      n = countLines(fsPx);
+    }
+    taFs = fsPx / 0.95;
+    taLh = fsPx * lhRatio;
+    taH = Math.min(Math.max(activeBlock.vh + 6, n * taLh + 8), room + 12);
   }
 
   const handleModeChange = (id) => {
     cancelEdit();
     editSnap.current = null; // clear snapshot when mode changes
+    setActiveImg(null);
     setMode(id);
   };
 
@@ -1205,8 +1748,8 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
             <X className="w-4 h-4 text-slate-600" />
           </button>
           <div className="flex items-center space-x-1.5">
-            <FileText className="w-4 h-4 text-rose-600" />
-            <span className="text-sm font-black text-slate-800">PDF Forge Editor</span>
+            <Logo iconSize={22} textClass="text-sm font-black" />
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Editor</span>
           </div>
         </div>
         <div className="flex items-center space-x-1.5">
@@ -1219,7 +1762,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="ml-2 px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-xs font-bold rounded-lg transition flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
+            className="ml-2 px-4 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
           >
             {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
             <span>SAVE &amp; DOWNLOAD</span>
@@ -1232,6 +1775,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
         {toolBtn('pointer', MousePointer2, 'Pointer')}
         {toolBtn('edit', Type, 'Edit Text')}
         {toolBtn('add', Type, 'Add Text')}
+        {toolBtn('image', ImageIcon, 'Image')}
         {toolBtn('redact', Ban, 'Redact')}
         {toolBtn('highlight', Highlighter, 'Highlight')}
         {toolBtn('underline', Underline, 'Underline')}
@@ -1350,6 +1894,58 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
                 </div>
               ))}
 
+              {/* image hotspots — clickable in Image tool AND Pointer mode so
+                  pictures are always editable without switching tools first */}
+              {(mode === 'image' || mode === 'pointer') && groupImgs(pageImgs[currentPage] || []).map((im) => {
+                const [x0, y0, x1, y1] = (imgEdits[currentPage] || []).find(e => e.key === imgKey(im))?.curRect || im.rect;
+                const ghost = imgGhost && imgGhost.im === im ? imgGhost : null;
+                const vx = x0 * scale + (ghost ? ghost.dx : 0);
+                const vy = y0 * scale + (ghost ? ghost.dy : 0);
+                const isSel = activeImg && activeImg.xref === im.xref && String(activeImg.rect) === String(im.rect);
+                return (
+                  <div
+                    key={`${im.xref}-${x0}-${y0}`}
+                    onClick={(e) => { e.stopPropagation(); setActiveImg({ ...im, vx, vy }); }}
+                    onMouseDown={(e) => {
+                      e.stopPropagation(); e.preventDefault();
+                      imgDrag.current = { im, sx: e.clientX, sy: e.clientY, dx: 0, dy: 0 };
+                      setActiveImg({ ...im, vx, vy });
+                    }}
+                    title="Drag to move · click for Replace/Remove"
+                    className={`absolute cursor-move transition-colors ${
+                      ghost ? 'outline-2 outline-dashed outline-rose-500' :
+                      isSel ? 'outline-2 outline-rose-500' : 'hover:outline-1 hover:outline-dashed hover:outline-blue-400'
+                    }`}
+                    style={{ left: vx, top: vy, width: (x1 - x0) * scale, height: (y1 - y0) * scale, pointerEvents: 'auto' }}
+                  />
+                );
+              })}
+
+              {/* image action popup — Replace / Remove (follows the image as it moves) */}
+              {(mode === 'image' || mode === 'pointer') && activeImg && (() => {
+                const [px0, py0] = (imgEdits[currentPage] || []).find(e => e.key === imgKey(activeImg))?.curRect || activeImg.rect;
+                return (
+                <div
+                  className="absolute z-40 bg-white rounded-lg shadow-lg border border-slate-200 px-1 py-1 flex items-center space-x-1 text-xs font-bold whitespace-nowrap"
+                  style={{ left: px0 * scale, top: Math.max(4, py0 * scale - 42), pointerEvents: 'auto' }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  <button
+                    onClick={() => imgInputRef.current?.click()}
+                    className="px-2.5 py-1.5 hover:bg-slate-100 rounded cursor-pointer text-slate-700"
+                  >Replace…</button>
+                  <button
+                    onClick={() => { previewImgEdit('del', activeImg); setActiveImg(null); }}
+                    className="px-2.5 py-1.5 text-red-600 hover:bg-red-50 rounded cursor-pointer"
+                  >Remove</button>
+                  <button
+                    onClick={() => setActiveImg(null)}
+                    className="px-1.5 py-1.5 text-slate-400 hover:bg-slate-100 rounded cursor-pointer"
+                  >✕</button>
+                </div>
+                );
+              })()}
+
               {/* erase drag preview */}
               {eraseRect && (
                 <div
@@ -1381,8 +1977,8 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
                     onChange={(e) => setFmt(f => ({ ...f, fontSize: parseInt(e.target.value) || 12, sizeTouched: true }))}
                     className="w-12 px-1.5 py-1 border border-slate-300 rounded text-center text-[11px] font-medium"
                   />
-                  <button onClick={() => setFmt(f => ({ ...f, bold: !f.bold, fontTouched: true }))} className={`p-1 rounded cursor-pointer ${fmt.bold ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`} title="Bold"><Bold className="w-3.5 h-3.5" /></button>
-                  <button onClick={() => setFmt(f => ({ ...f, italic: !f.italic, fontTouched: true }))} className={`p-1 rounded cursor-pointer ${fmt.italic ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`} title="Italic"><Italic className="w-3.5 h-3.5" /></button>
+                  <button onClick={() => setFmt(f => ({ ...f, bold: !f.bold, boldTouched: true }))} className={`p-1 rounded cursor-pointer ${fmt.bold ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`} title="Bold"><Bold className="w-3.5 h-3.5" /></button>
+                  <button onClick={() => setFmt(f => ({ ...f, italic: !f.italic, italicTouched: true }))} className={`p-1 rounded cursor-pointer ${fmt.italic ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`} title="Italic"><Italic className="w-3.5 h-3.5" /></button>
                   <button onClick={() => setFmt(f => ({ ...f, underline: !f.underline }))} className={`p-1 rounded cursor-pointer ${fmt.underline ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'}`} title="Underline"><Underline className="w-3.5 h-3.5" /></button>
                   <input type="color" value={fmt.color} onChange={(e) => setFmt(f => ({ ...f, color: e.target.value, colorTouched: true }))} className="w-6 h-6 rounded border border-slate-300 cursor-pointer" title="Text color" />
                   <div className="h-4 w-px bg-slate-300" />
@@ -1391,6 +1987,23 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
                 </div>
               )}
 
+              {/* hidden picker for the replacement image */}
+              <input
+                ref={imgInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f && activeImg) {
+                    const imgEl = new Image();
+                    imgEl.onload = () => previewImgEdit('rep', activeImg, { file: f, imgEl });
+                    imgEl.src = URL.createObjectURL(f);
+                  }
+                  e.target.value = '';
+                }}
+              />
+
               {/* Active block editor */}
               {activeBlock && (
                 <textarea
@@ -1398,22 +2011,29 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
                   spellCheck={false}
                   value={activeEdit.draft}
                   onChange={(e) => setActiveEdit(a => ({ ...a, draft: e.target.value }))}
-                  onKeyDown={(e) => { if (e.key === 'Escape') cancelEdit(); }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') cancelEdit();
+                    else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitBlockEdit(); }
+                  }}
                   className="absolute z-30 border-2 border-rose-500 rounded-sm px-0.5 py-0 outline-none resize-none overflow-hidden"
                   style={{
                     left: activeBlock.vx, top: activeBlock.vy,
                     width: taW,
                     height: taH,
                     backgroundColor: activeBlock.bgColor ? rgbCss(activeBlock.bgColor) : '#ffffff',
-                    fontSize: fmt.sizeTouched ? fmt.fontSize * scale : activeBlock.vFontH,
-                    lineHeight: `${(activeBlock.lineH || activeBlock.vFontH * 1.22)}px`,
+                    fontSize: taFs,
+                    lineHeight: `${taLh}px`,
                     // real embedded font — bold/italic are inside the font itself
                     fontFamily: fmt.fontTouched ? `"${fmt.family}", sans-serif` : (activeBlock.font?.family || cssFor(fmt.family)),
-                    fontWeight: fmt.fontTouched ? (fmt.bold ? 'bold' : 'normal') : (activeBlock.font?.cssWeight || 'normal'),
-                    fontStyle: fmt.fontTouched ? (fmt.italic ? 'italic' : 'normal') : (activeBlock.font?.cssStyle || 'normal'),
+                    fontWeight: (fmt.boldTouched ? fmt.bold : activeBlock.cBold ?? activeBlock.font?.bold) ? 'bold' : 'normal',
+                    fontStyle: (fmt.italicTouched ? fmt.italic : activeBlock.cItalic ?? activeBlock.font?.italic) ? 'italic' : 'normal',
                     textDecoration: 'none',
                     color: fmt.color,
                     caretColor: fmt.color,
+                    // wrap long words inside the cell-width box instead of
+                    // growing past the edge
+                    wordBreak: 'break-all',
+                    overflowWrap: 'anywhere',
                     pointerEvents: 'auto',
                   }}
                 />

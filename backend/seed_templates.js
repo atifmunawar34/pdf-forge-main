@@ -5,25 +5,15 @@ const fs = require('fs');
 const path = require('path');
 
 const CATEGORIES = [
-  ['career', 'Career & Jobs'],
-  ['business', 'Business'],
-  ['sales-invoicing', 'Sales & Invoicing'],
-  ['freelance', 'Freelancers & Agencies'],
-  ['hr', 'HR & Employees'],
-  ['finance', 'Finance'],
-  ['education', 'Education'],
-  ['personal', 'Personal'],
-  ['real-estate', 'Real Estate'],
-  ['legal', 'Legal & Agreements'],
-  ['marketing', 'Marketing'],
-  ['project', 'Project Management'],
-  ['ecommerce', 'E-commerce'],
-  ['import-export', 'Import & Export'],
-  ['healthcare', 'Healthcare / Clinics'],
-  ['construction', 'Construction'],
-  ['food', 'Restaurants & Food'],
-  ['travel-events', 'Travel & Events'],
-  ['nonprofit', 'Nonprofit / Organizations'],
+  ['resumes', 'Resumes & CVs'],
+  ['cover-letters', 'Cover Letters'],
+  ['business', 'Business Documents'],
+  ['invitations', 'Invitations & Cards'],
+  ['certificates', 'Certificates & Awards'],
+  ['menus', 'Menus & Price Lists'],
+  ['planners', 'Planners & Schedules'],
+  ['events', 'Events & Programs'],
+  ['marketing', 'Marketing & Promo'],
 ];
 
 const LEGAL_DISCLAIMER =
@@ -31,13 +21,7 @@ const LEGAL_DISCLAIMER =
   'It is not legal advice. Consider consulting a qualified professional for your specific situation.';
 
 const data = [
-  ...require('./seed_data_a'),
-  ...require('./seed_data_b'),
-  ...require('./seed_data_c'),
-  ...require('./seed_data_d'),
-  ...require('./seed_data_e'),
-  ...require('./seed_data_f'),
-  ...require('./seed_data_g'),
+  ...require('./seed_canva'),
 ];
 
 // Every template gets a unique design combo: theme × accent × header variant.
@@ -55,6 +39,8 @@ const VARIANTS = {
   stripe: ['rail', 'panel'],
   edge: ['hairline', 'split'],
 };
+// Vecteezy-style decorative accents — unique per template.
+const DECORS = ['tri', 'dots', 'diag', 'geo', 'zig', 'frame', 'wave', 'bar'];
 
 // All theme × variant × accent combos (13 pairs × 15 accents = 195),
 // interleaved with a coprime stride so consecutive templates get
@@ -72,9 +58,9 @@ const SPREAD = [];
   }
 }
 
-// Global uniqueness — no two templates share theme/variant/accent/layout.
+// Global uniqueness — no two templates share theme/variant/accent/layout/decor.
 const taken = new Set();
-const comboKey = (theme, variant, accent, layout) => [theme || '-', variant || '-', accent, layout || '-'].join('/');
+const comboKey = (theme, variant, accent, layout, decor) => [theme || '-', variant || '-', accent, layout || '-', decor || '-'].join('/');
 let spreadIdx = 0;
 
 const seen = new Set();
@@ -124,7 +110,7 @@ const templates = data.map((t, i) => {
     accent,
     status: 'published',
     featured: t.featured || false,
-    seoTitle: `Free ${t.name} Template — Fill & Download PDF | PDF Forge`,
+    seoTitle: `Free ${t.name} Template — Fill & Download PDF | iLoveToPDF`,
     seoDescription: `Create a professional ${t.name.toLowerCase()} in minutes. Fill in the fields, preview, then download as PDF or print — free.`,
     faqs: [
       { q: `Is this ${t.name} template free?`, a: 'Yes. Fill it in online, preview the result and download it as a PDF for free.' },

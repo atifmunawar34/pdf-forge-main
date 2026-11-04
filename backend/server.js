@@ -85,6 +85,21 @@ const baseName = (originalname) =>
     .replace(/\/+/g, '_')
     .trim() || 'file';
 
+// Subprocess stderr can contain absolute paths, Python tracebacks and
+// version fingerprints — never echo it verbatim to the client. Keep only
+// the last meaningful line (e.g. "Incorrect password.") with paths defanged.
+function clientErr(error, fallback) {
+  const lines = String(error?.message || '')
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^[\w./-]+ failed with code \d+:\s*/i, '').trim())
+    .filter((l) => l && !/^(Traceback|File\s*"|~*\^+)/.test(l));
+  const last = (lines[lines.length - 1] || '')
+    .replace(/[A-Za-z]:[\\/][^\s"']*/g, '…')
+    .replace(/\/(?:[\w+.-]+\/){2,}[\w+.-]*/g, '…')
+    .slice(0, 300);
+  return last || fallback;
+}
+
 // CORS — allowlist only. Production origins come from CORS_ORIGINS env
 // (comma-separated, e.g. "https://ilovetopdf.com,https://www.ilovetopdf.com").
 // Dev defaults cover localhost and private-LAN frontends on any port.
@@ -93,8 +108,10 @@ const baseName = (originalname) =>
 const allowedOrigins = new Set(
   (process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean)
 );
-const DEV_ORIGIN =
-  /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?$/;
+const OCTET = '(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)';
+const DEV_ORIGIN = new RegExp(
+  `^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\]|192\\.168\\.${OCTET}\\.${OCTET}|10\\.${OCTET}\\.${OCTET}\\.${OCTET}|172\\.(1[6-9]|2\\d|3[01])\\.${OCTET}\\.${OCTET})(:\\d+)?$`
+);
 
 app.use(cors({
   origin(origin, cb) {
@@ -485,8 +502,7 @@ async function extractAssetsViaPython(req, res, mode) {
     return res.send(zipBuffer);
   } catch (error) {
     console.error(`Extract ${mode} error:`, error);
-    const msg = (error.message || '').replace(/python failed with code \d+:\s*/i, '').trim();
-    return res.status(400).json({ error: msg || `Failed to extract ${mode}.` });
+    return res.status(400).json({ error: clientErr(error, `Failed to extract ${mode}.`) });
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -529,8 +545,7 @@ app.post('/api/page-ops', upload.single('file'), async (req, res) => {
     return res.send(pdfBuffer);
   } catch (error) {
     console.error(`page-ops ${mode} error:`, error);
-    const msg = (error.message || '').replace(/python failed with code \d+:\s*/i, '').trim();
-    return res.status(500).json({ error: msg || `Failed to run ${mode}.` });
+    return res.status(500).json({ error: clientErr(error, `Failed to run ${mode}.`) });
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -560,8 +575,7 @@ app.post('/api/docx-from-text', async (req, res) => {
     return res.send(outBuffer);
   } catch (error) {
     console.error('docx-from-text error:', error);
-    const msg = (error.message || '').replace(/python failed with code \d+:\s*/i, '').trim();
-    return res.status(500).json({ error: msg || 'Failed to build the edited document.' });
+    return res.status(500).json({ error: clientErr(error, 'Failed to build the edited document.') });
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -720,7 +734,7 @@ sys.exit(0)
     res.setHeader('Content-Disposition', `attachment; filename="${originalName}_unlocked.pdf"`);
     return res.send(unlockedBuffer);
   } catch (error) {
-    return res.status(400).json({ error: error.message || 'Failed to unlock PDF.' });
+    return res.status(400).json({ error: clientErr(error, 'Failed to unlock PDF.') });
   } finally {
     await fs.unlink(inputPath).catch(() => {});
     await fs.unlink(outputPath).catch(() => {});
@@ -1220,8 +1234,10 @@ app.get('/api/inquiries', async (req, res) => {
 // instead of Express's default HTML error page.
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
-    const msg = err.code === 'LIMIT_FILE_SIZE' ? 'File exceeds the 100 MB limit.' : `Upload rejected (${err.code}).`;
-    return res.status(413).json({ error: msg });
+    if (err.code === 'LIMIT_FILE_SIZE' || err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_PART_COUNT') {
+      return res.status(413).json({ error: 'Upload exceeds the 100 MB / file-count limit.' });
+    }
+    return res.status(400).json({ error: `Upload rejected (${err.code}).` });
   }
   if (err?.type === 'entity.parse.failed' || (err instanceof SyntaxError && 'body' in err)) {
     return res.status(400).json({ error: 'Malformed JSON body.' });

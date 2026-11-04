@@ -804,9 +804,33 @@ app.post('/api/crop-pdf', upload.single('file'), async (req, res) => {
     }
 
     // Parse the crop parameters from the multipart request
-    const cropParams = JSON.parse(req.body.cropParams);
+    let cropParams;
+    try {
+      cropParams = JSON.parse(req.body.cropParams || '{}');
+    } catch {
+      return res.status(400).json({ error: 'Invalid crop parameters.' });
+    }
 
-    // cropParams structure: { pages: 'all'|'current', currentPageNumber: number, x: percent, y: percent, width: percent, height: percent }
+    // cropParams is interpolated into a Ghostscript -c PostScript program
+    // further down — every field MUST be coerced to a bounded number here.
+    // A string like "} } (file.ps) run [" would otherwise execute arbitrary
+    // PostScript on the server (file read, command exec on old gs builds).
+    const num = (v, lo, hi) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null;
+    };
+    const page = Number(cropParams.currentPageNumber);
+    cropParams = {
+      x: num(cropParams.x, 0, 100),
+      y: num(cropParams.y, 0, 100),
+      width: num(cropParams.width, 0.1, 100),
+      height: num(cropParams.height, 0.1, 100),
+      currentPageNumber: Number.isInteger(page) && page >= 1 ? page : 1,
+      pages: cropParams.pages === 'current' ? 'current' : 'all',
+    };
+    if (Object.values(cropParams).includes(null)) {
+      return res.status(400).json({ error: 'Invalid crop parameters.' });
+    }
 
     const inputBuffer = req.file.buffer;
     const croppedBuffer = await executeGhostscriptCrop(
@@ -1094,10 +1118,19 @@ app.get('/api/templates', (req, res) => {
 // Lightweight usage analytics: view | preview | use | download
 app.post('/api/templates/:id/track', (req, res) => {
   const { type } = req.body || {};
+  const id = req.params.id;
+  // req.params.id is attacker-controlled. Writing templateUsage[id] with a
+  // magic key like '__proto__' pollutes Object.prototype for the whole
+  // process — only known template ids may be tracked, and magic keys are
+  // refused outright as defense-in-depth.
+  const isKnown = getTemplatesData().templates.some((t) => t.id === id);
+  if (!isKnown || ['__proto__', 'prototype', 'constructor'].includes(id)) {
+    return res.status(400).json({ error: 'invalid id' });
+  }
   if (!['view', 'preview', 'use', 'download'].includes(type)) {
     return res.status(400).json({ error: 'invalid type' });
   }
-  const u = (templateUsage[req.params.id] = templateUsage[req.params.id] || {});
+  const u = (templateUsage[id] = templateUsage[id] || {});
   u[type] = (u[type] || 0) + 1;
   fs.writeFile(TPL_USAGE_PATH, JSON.stringify(templateUsage)).catch(() => {});
   res.json({ ok: true });

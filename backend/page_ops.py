@@ -38,7 +38,9 @@ def main():
             doc.select(list(range(len(doc) - 1, -1, -1)))
 
         elif mode == "insert-blank":
-            count = max(1, int(params.get("count", 1)))
+            # Bound the insert count — an unbounded count is a resource
+            # bomb (a million blank pages ties up the worker for minutes).
+            count = max(1, min(1000, int(params.get("count", 1))))
             position = params.get("position", "end")
             after_page = int(params.get("afterPage", 0))
             w, h = (595.0, 842.0)

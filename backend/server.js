@@ -27,9 +27,13 @@ function runPython(args) {
       let timedOut = false;
       const killTimer = setTimeout(() => { timedOut = true; py.kill('SIGKILL'); }, PYTHON_TIMEOUT_MS);
       let stderr = '';
+      let stdout = '';
 
       py.stderr.on('data', (data) => {
         stderr += data.toString();
+      });
+      py.stdout.on('data', (data) => {
+        stdout += data.toString();
       });
 
       py.on('error', (err) => {
@@ -40,7 +44,7 @@ function runPython(args) {
       py.on('close', (code) => {
         clearTimeout(killTimer);
         if (code === 0) {
-          resolve();
+          resolve(stdout);
           return;
         }
         if (timedOut) {
@@ -67,6 +71,14 @@ function runPython(args) {
 }
 
 const libreConvert = util.promisify(libre.convert);
+// Spawn with the same kill-switch as runPython — a hung subprocess must
+// not hold its worker slot open forever.
+function spawnBounded(cmd, args) {
+  const child = spawn(cmd, args, { windowsHide: true });
+  const killTimer = setTimeout(() => child.kill('SIGKILL'), PYTHON_TIMEOUT_MS);
+  child.on('close', () => clearTimeout(killTimer));
+  return child;
+}
 const app = express();
 app.disable('x-powered-by');
 // Cap uploads — memoryStorage buffers the whole file in RAM, so an
@@ -453,7 +465,7 @@ app.post('/api/convert/pdf-to-excel', upload.single('file'), async (req, res) =>
     await fs.writeFile(inputPdfPath, req.file.buffer);
 
     await new Promise((resolve, reject) => {
-      const py = spawn('python3', [pythonScriptPath, inputPdfPath, outputXlsxPath]);
+      const py = spawnBounded('python3', [pythonScriptPath, inputPdfPath, outputXlsxPath]);
 
       let stderr = '';
       py.stderr.on('data', (data) => {
@@ -721,7 +733,7 @@ sys.exit(0)
 `;
 
     await new Promise((resolve, reject) => {
-      const py = spawn('python3', ['-c', pyScript, inputPath, outputPath, mode, password]);
+      const py = spawnBounded('python3', ['-c', pyScript, inputPath, outputPath, mode, password]);
       let stderr = '';
       py.stderr.on('data', (d) => (stderr += d.toString()));
       py.on('close', (code) => {
@@ -790,7 +802,7 @@ async function executeGhostscriptCrop(inputBuffer, cropParams, _originalFilename
   ];
 
   return new Promise((resolve, reject) => {
-    const gs = spawn('gs', gsArgs);
+    const gs = spawnBounded('gs', gsArgs);
     let stderr = '';
     gs.stderr.on('data', (d) => (stderr += d.toString()));
 
@@ -892,7 +904,7 @@ app.post('/api/convert/pdf-to-markdown', upload.single('file'), async (req, res)
     await fs.writeFile(inputPdfPath, req.file.buffer);
 
     await new Promise((resolve, reject) => {
-      const py = spawn('python3', [pythonScriptPath, inputPdfPath, outputMdPath]);
+      const py = spawnBounded('python3', [pythonScriptPath, inputPdfPath, outputMdPath]);
 
       let stderr = '';
       py.stderr.on('data', (data) => {
@@ -973,7 +985,7 @@ app.post('/api/edit-pdf-text', upload.fields([
     await fs.writeFile(editsPath, payloadStr);
 
     await new Promise((resolve, reject) => {
-      const py = spawn('python3', [pythonScriptPath, inputPdfPath, outputPdfPath, editsPath]);
+      const py = spawnBounded('python3', [pythonScriptPath, inputPdfPath, outputPdfPath, editsPath]);
 
       let stderr = '';
       py.stderr.on('data', (data) => {
@@ -1019,19 +1031,7 @@ app.post('/api/pdf-images', upload.single('file'), async (req, res) => {
     await fs.mkdir(tempDir, { recursive: true });
     await fs.writeFile(inputPdfPath, req.file.buffer);
 
-    const json = await new Promise((resolve, reject) => {
-      const py = spawn('python3', [pythonScriptPath, inputPdfPath]);
-      let stdout = '';
-      let stderr = '';
-      py.stdout.on('data', (d) => { stdout += d.toString(); });
-      py.stderr.on('data', (d) => { stderr += d.toString(); });
-      py.on('close', (code) => {
-        if (code === 0) resolve(stdout);
-        else reject(new Error(`list_pdf_images failed with code ${code}: ${stderr}`));
-      });
-      py.on('error', (err) => reject(err));
-    });
-
+    const json = await runPython([pythonScriptPath, inputPdfPath]);
     return res.json(JSON.parse(json || '{}'));
   } catch (error) {
     console.error('PDF image list error:', error);
@@ -1090,16 +1090,7 @@ app.post('/api/edit-pdf-image', upload.fields([
     if (req.body.rect) args.push(req.body.rect);
     if (req.body.newRect) args.push(req.body.newRect);
 
-    await new Promise((resolve, reject) => {
-      const py = spawn('python3', args);
-      let stderr = '';
-      py.stderr.on('data', (d) => { stderr += d.toString(); });
-      py.on('close', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`edit_pdf_image failed with code ${code}: ${stderr}`));
-      });
-      py.on('error', (err) => reject(err));
-    });
+    await runPython(args);
 
     const pdfBuffer = await fs.readFile(outputPdfPath);
     res.setHeader('Content-Type', 'application/pdf');
@@ -1150,6 +1141,16 @@ app.get('/api/templates', (req, res) => {
   res.json({ categories: data.categories, templates });
 });
 
+// Serialize read-modify-write cycles per JSON file — parallel requests
+// otherwise lose updates when a stale snapshot's writeFile lands last.
+const jsonFileQueues = new Map();
+function queueJsonWrite(path, work) {
+  const prev = jsonFileQueues.get(path) || Promise.resolve();
+  const next = prev.catch(() => {}).then(work);
+  jsonFileQueues.set(path, next);
+  return next;
+}
+
 // Lightweight usage analytics: view | preview | use | download
 app.post('/api/templates/:id/track', (req, res) => {
   const { type } = req.body || {};
@@ -1167,7 +1168,9 @@ app.post('/api/templates/:id/track', (req, res) => {
   }
   const u = (templateUsage[id] = templateUsage[id] || {});
   u[type] = (u[type] || 0) + 1;
-  fs.writeFile(TPL_USAGE_PATH, JSON.stringify(templateUsage)).catch(() => {});
+  queueJsonWrite(TPL_USAGE_PATH, () =>
+    fs.writeFile(TPL_USAGE_PATH, JSON.stringify(templateUsage))
+  ).catch(() => {});
   res.json({ ok: true });
 });
 
@@ -1228,10 +1231,12 @@ app.post('/api/inquiries', async (req, res) => {
     createdAt: new Date().toISOString(),
   };
   try {
-    let list = [];
-    try { list = JSON.parse(await fs.readFile(INQUIRIES_PATH, 'utf8')); } catch { /* first inquiry */ }
-    list.push(clean);
-    await fs.writeFile(INQUIRIES_PATH, JSON.stringify(list, null, 2));
+    await queueJsonWrite(INQUIRIES_PATH, async () => {
+      let list = [];
+      try { list = JSON.parse(await fs.readFile(INQUIRIES_PATH, 'utf8')); } catch { /* first inquiry */ }
+      list.push(clean);
+      await fs.writeFile(INQUIRIES_PATH, JSON.stringify(list, null, 2));
+    });
     res.json({ ok: true });
   } catch {
     res.status(500).json({ error: 'Could not store inquiry.' });

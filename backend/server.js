@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
+const rateLimit = require('express-rate-limit');
 const libre = require('libreoffice-convert');
 const util = require('util');
 const { spawn } = require('child_process');
@@ -9,6 +10,8 @@ const path = require('path');
 const os = require('os');
 
 const PYTHON_COMMANDS = process.platform === 'win32' ? ['python', 'py', 'python3'] : ['python3', 'python'];
+// Max wall-clock time for one conversion subprocess (default 5 min, env-overridable).
+const PYTHON_TIMEOUT_MS = Number(process.env.PYTHON_TIMEOUT_MS) || 5 * 60 * 1000;
 
 function runPython(args) {
   return new Promise((resolve, reject) => {
@@ -20,6 +23,9 @@ function runPython(args) {
 
       const cmd = PYTHON_COMMANDS[index];
       const py = spawn(cmd, args, { windowsHide: true });
+      // Kill a hung subprocess rather than holding the request open forever.
+      let timedOut = false;
+      const killTimer = setTimeout(() => { timedOut = true; py.kill('SIGKILL'); }, PYTHON_TIMEOUT_MS);
       let stderr = '';
 
       py.stderr.on('data', (data) => {
@@ -27,12 +33,18 @@ function runPython(args) {
       });
 
       py.on('error', (err) => {
+        clearTimeout(killTimer);
         tryNext(index + 1, err);
       });
 
       py.on('close', (code) => {
+        clearTimeout(killTimer);
         if (code === 0) {
           resolve();
+          return;
+        }
+        if (timedOut) {
+          reject(new Error('Conversion timed out.'));
           return;
         }
 
@@ -73,18 +85,50 @@ const baseName = (originalname) =>
     .replace(/\/+/g, '_')
     .trim() || 'file';
 
-//cors for local 
-//app.use(cors());
+// CORS — allowlist only. Production origins come from CORS_ORIGINS env
+// (comma-separated, e.g. "https://ilovetopdf.com,https://www.ilovetopdf.com").
+// Dev defaults cover localhost and private-LAN frontends on any port.
+// Requests without an Origin header (curl, server-to-server) are not
+// browser cross-origin calls and are always allowed.
+const allowedOrigins = new Set(
+  (process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean)
+);
+const DEV_ORIGIN =
+  /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?$/;
 
-//cors for production 
 app.use(cors({
-  origin: '*', // Or specify: ['https://your-app.vercel.app', 'https://<username>.github.io']
+  origin(origin, cb) {
+    if (!origin || allowedOrigins.has(origin) || DEV_ORIGIN.test(origin)) return cb(null, true);
+    return cb(new Error(`CORS: origin ${origin} not allowed`));
+  },
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type'],
+  allowedHeaders: ['Content-Type', 'x-admin-key'],
   exposedHeaders: ['x-original-size', 'x-compressed-size', 'Content-Disposition']
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
+
+// ---- Rate limiting -----------------------------------------------------
+// Conversions spawn Python/LibreOffice subprocesses — a single request can
+// burn seconds of CPU, so the heavy endpoints get a tight per-IP budget.
+const json429 = { error: 'Too many requests — please slow down and try again later.' };
+const limiterOpts = { standardHeaders: true, legacyHeaders: false, message: json429 };
+
+// Safety net for every /api call (generous — real limits live below).
+app.use('/api', rateLimit({ ...limiterOpts, windowMs: 15 * 60 * 1000, max: 600 }));
+
+// Heavy conversion/upload endpoints: 60 per 15 min per IP.
+const HEAVY_ROUTES = [
+  '/api/convert/', '/api/compress-pdf', '/api/extract-', '/api/page-ops',
+  '/api/protect-pdf', '/api/unlock-pdf', '/api/crop-pdf', '/api/edit-pdf-',
+  '/api/pdf-images', '/api/docx-from-text',
+];
+HEAVY_ROUTES.forEach((p) => app.use(p, rateLimit({ ...limiterOpts, windowMs: 15 * 60 * 1000, max: 60 })));
+
+// AI proxy costs real money upstream — keep it tighter.
+app.use('/api/ai', rateLimit({ ...limiterOpts, windowMs: 15 * 60 * 1000, max: 30 }));
+// Inquiry form is a public write — cap it to stop spam-flooding the store.
+app.use('/api/inquiries', rateLimit({ ...limiterOpts, windowMs: 60 * 60 * 1000, max: 20 }));
 
 // Office/HTML to PDF via the PyMuPDF Story engine (office_to_pdf.py) — no LibreOffice needed
 async function convertViaPython(fileBuffer, ext) {
@@ -1074,16 +1118,26 @@ app.post('/api/ai', async (req, res) => {
     return res.status(400).json({ error: 'Invalid prompt.' });
   }
   try {
-    const r = await fetch(`${base}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 1200,
-        temperature: 0.5,
-      }),
-    });
+    // Bound the upstream call — a hung provider must not hold this request
+    // (and its connection slot) open forever.
+    const ctrl = new AbortController();
+    const upstreamTimer = setTimeout(() => ctrl.abort(), 60 * 1000);
+    let r;
+    try {
+      r = await fetch(`${base}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 1200,
+          temperature: 0.5,
+        }),
+      });
+    } finally {
+      clearTimeout(upstreamTimer);
+    }
     const data = await r.json().catch(() => ({}));
     if (!r.ok) return res.status(r.status).json({ error: data.error?.message || 'AI provider error.' });
     res.json({ result: data.choices?.[0]?.message?.content || '' });
@@ -1117,9 +1171,12 @@ app.post('/api/inquiries', async (req, res) => {
 });
 // Inquiry list contains customer data — never expose it without the admin key.
 // Set ADMIN_KEY in env; without it the endpoint stays disabled entirely.
+// Send it in the x-admin-key header (the ?key= query form still works, but
+// headers don't leak into proxy/access logs).
 app.get('/api/inquiries', async (req, res) => {
   const key = process.env.ADMIN_KEY;
-  if (!key || req.query.key !== key) {
+  const supplied = req.get('x-admin-key') || req.query.key;
+  if (!key || supplied !== key) {
     return res.status(403).json({ error: 'Forbidden.' });
   }
   try { res.json(JSON.parse(await fs.readFile(INQUIRIES_PATH, 'utf8'))); }

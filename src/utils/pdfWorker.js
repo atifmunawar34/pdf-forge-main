@@ -2362,11 +2362,13 @@ export async function performPdfOcr(file, options = {}) {
       await page.render({ canvasContext: ctx, viewport }).promise;
 
       // Real-time recognition runs here; logger will stream granular progress updates automatically
-      const { data } = await worker.recognize(canvas);
+      // (pass PNG data — feeding the canvas element itself can hit a
+      //  "SOI not found in JPEG" decode error inside tesseract's image path)
+      const { data } = await worker.recognize(canvas.toDataURL('image/png'));
       extractedFullText += `--- Page ${pageNum} ---\n` + (data.text || '') + '\n\n';
 
       if (outputMode === 'searchable_pdf') {
-        const imgDataUrl = canvas.toDataURL('image/png');
+        const imgDataUrl = canvas.toDataURL('image/jpeg', 0.92);
         const imgBytes = await (await fetch(imgDataUrl)).arrayBuffer();
         const embeddedImg = await outputPdfDoc.embedJpg(imgBytes);
 

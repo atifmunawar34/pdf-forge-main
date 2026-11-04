@@ -78,7 +78,10 @@ def main():
         elif mode == "grayscale":
             new = fitz.open()
             for page in doc:
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                # Cap the rendered pixmap (~4000px long side) — a hostile
+                # MediaBox would otherwise force a multi-GB allocation.
+                z = min(1.5, 4000.0 / max(page.rect.width, page.rect.height, 1))
+                pix = page.get_pixmap(matrix=fitz.Matrix(z, z))
                 gray = fitz.Pixmap(fitz.csGRAY, pix)
                 np = new.new_page(width=page.rect.width, height=page.rect.height)
                 np.insert_image(np.rect, pixmap=gray)

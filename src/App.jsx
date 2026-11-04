@@ -8,7 +8,7 @@ import Footer from './components/Footer';
 import TemplatesHub from './components/TemplatesHub';
 import TemplateDetail from './components/TemplateDetail';
 import TemplateEditor from './components/TemplateEditor';
-import { PDF_CATEGORIES } from './data/pdfTools';
+import { PDF_CATEGORIES, TOOL_SEO } from './data/pdfTools';
 import { ArrowRight, FileText, LayoutTemplate, Zap, ShieldCheck, BadgeCheck, MousePointerClick, Upload, Download } from 'lucide-react';
 import { fetchTemplates, findTemplate } from './utils/templatesApi';
 import { PopupProvider } from './components/Popups';
@@ -119,6 +119,30 @@ function AppContent() {
       window.history.pushState(null, '', target);
     }
   }, [activeModalTool, activeStudioSession, tplRoute, kitRoute]);
+
+  // Per-tool SEO metadata — same save/set/restore pattern as TemplateDetail.jsx
+  useEffect(() => {
+    const id = activeStudioSession?.tool?.id || activeModalTool?.id;
+    const seo = id ? TOOL_SEO[id] : null;
+    if (!seo) return;
+    const prevTitle = document.title;
+    const descEl = document.querySelector('meta[name="description"]');
+    const ogTitleEl = document.querySelector('meta[property="og:title"]');
+    const ogDescEl = document.querySelector('meta[property="og:description"]');
+    const prevDesc = descEl?.getAttribute('content');
+    const prevOgTitle = ogTitleEl?.getAttribute('content');
+    const prevOgDesc = ogDescEl?.getAttribute('content');
+    document.title = seo.title;
+    if (descEl) descEl.setAttribute('content', seo.desc);
+    if (ogTitleEl) ogTitleEl.setAttribute('content', seo.title);
+    if (ogDescEl) ogDescEl.setAttribute('content', seo.desc);
+    return () => {
+      document.title = prevTitle;
+      if (descEl && prevDesc != null) descEl.setAttribute('content', prevDesc);
+      if (ogTitleEl && prevOgTitle != null) ogTitleEl.setAttribute('content', prevOgTitle);
+      if (ogDescEl && prevOgDesc != null) ogDescEl.setAttribute('content', prevOgDesc);
+    };
+  }, [activeModalTool, activeStudioSession]);
 
   // Keep state in sync with the URL (browser back/forward + deep links)
   useEffect(() => {

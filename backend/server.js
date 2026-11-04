@@ -68,6 +68,7 @@ function runPython(args) {
 
 const libreConvert = util.promisify(libre.convert);
 const app = express();
+app.disable('x-powered-by');
 // Cap uploads — memoryStorage buffers the whole file in RAM, so an
 // unbounded upload is a trivial memory-exhaustion DoS.
 const upload = multer({
@@ -124,6 +125,14 @@ app.use(cors({
 }));
 
 app.use(express.json({ limit: '1mb' }));
+
+// API responses contain user documents — never let shared caches store them,
+// and don't let browsers MIME-sniff downloads into active content.
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  res.set('X-Content-Type-Options', 'nosniff');
+  next();
+});
 
 // ---- Rate limiting -----------------------------------------------------
 // Conversions spawn Python/LibreOffice subprocesses — a single request can
@@ -1064,6 +1073,18 @@ app.post('/api/edit-pdf-image', upload.fields([
     await fs.writeFile(inputPdfPath, pdfFile.buffer);
     if (imgFile) await fs.writeFile(imgPath, imgFile.buffer);
 
+    // rect/newRect are forwarded as argv — accept only [x0,y0,x1,y1] of
+    // finite numbers so a malformed body can't reach fitz.Rect unvalidated.
+    const rectOk = (v) => {
+      try {
+        const r = JSON.parse(v);
+        return Array.isArray(r) && r.length === 4 && r.every((n) => Number.isFinite(n));
+      } catch { return false; }
+    };
+    if ((req.body.rect && !rectOk(req.body.rect)) || (req.body.newRect && !rectOk(req.body.newRect))) {
+      return res.status(400).json({ error: 'Invalid rect.' });
+    }
+
     const args = [pythonScriptPath, inputPdfPath, outputPdfPath, String(page), String(xref), action];
     if (action === 'replace') args.push(imgPath); else args.push('-');
     if (req.body.rect) args.push(req.body.rect);
@@ -1194,7 +1215,7 @@ app.post('/api/ai', async (req, res) => {
 });
 
 // AI Assistant project inquiries — validated, stored to JSON (CRM-ready).
-const INQUIRIES_PATH = path.join(os.tmpdir(), 'ilovetopdf-inquiries.json');
+const INQUIRIES_PATH = path.join(__dirname, 'data', 'inquiries.json');
 app.post('/api/inquiries', async (req, res) => {
   const { serviceId, service, answers } = req.body || {};
   if (!serviceId || !Array.isArray(answers) || !answers.length) {

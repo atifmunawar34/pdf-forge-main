@@ -38,7 +38,10 @@ def main():
     tmpdir = tempfile.mkdtemp(prefix='pdf2pptx_')
     try:
         for i, page in enumerate(doc):
-            pix = page.get_pixmap(dpi=150)
+            # Cap the rendered pixmap (~4000px long side) — a hostile
+            # MediaBox would otherwise force a multi-GB allocation.
+            z = min(150 / 72, 4000.0 / max(page.rect.width, page.rect.height, 1))
+            pix = page.get_pixmap(matrix=fitz.Matrix(z, z))
             img_path = os.path.join(tmpdir, f'page_{i + 1}.png')
             pix.save(img_path)
             slide = prs.slides.add_slide(blank)

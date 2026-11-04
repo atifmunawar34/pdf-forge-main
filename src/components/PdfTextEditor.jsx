@@ -625,7 +625,7 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
       }
       if (b.strike) {
         ctx.fillStyle = b.strikeColor || '#000000';
-        ctx.fillRect(ln.vx, ln.vy + ln.vh * 0.45, ln.vw, Math.max(1, ln.vFontH * 0.07));
+        ctx.fillRect(ln.vx, ln.vy + ln.vh * 0.61, ln.vw, Math.max(1, ln.vFontH * 0.07));
       }
     }
   };
@@ -1392,7 +1392,17 @@ export default function PdfTextEditor({ file, onSave, onCancel }) {
           [l.vx / scale, l.vy / scale, (l.vx + l.vw) / scale, (l.vy + l.vh) / scale]);
         if (b.hl) edits.push({ action: 'highlight', rects: lineRects, color: c255(b.hlColor || '#ffeb3b') });
         if (b.uline) edits.push({ action: 'underline', rects: lineRects, color: c255(b.ulColor || '#000000') });
-        if (b.strike) edits.push({ action: 'strikeout', rects: lineRects, color: c255(b.strikeColor || '#000000') });
+        if (b.strike) {
+          // send a band centered on the strike position (~x-height middle,
+          // same spot as the canvas preview + pdf-lib path) so viewers draw
+          // the annot's line mid-rect at the right height
+          const strikeRects = (b.lines || []).map(l => {
+            const cy = (l.vy + l.vh * 0.61) / scale;
+            const half = (l.vh * 0.3) / scale;
+            return [l.vx / scale, cy - half, (l.vx + l.vw) / scale, cy + half];
+          });
+          edits.push({ action: 'strikeout', rects: strikeRects, color: c255(b.strikeColor || '#000000') });
+        }
       }
       for (const e of pd.erasures || []) {
         edits.push({

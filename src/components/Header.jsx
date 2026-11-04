@@ -3,6 +3,7 @@ import { ChevronDown, Search, ArrowRight, Menu, X, FileText, Sparkles, Grip, Cir
 import Logo from './Logo';
 import ToolGlyph from './ToolGlyph';
 import { PDF_CATEGORIES } from '../data/pdfTools';
+import { KIT_CATEGORIES } from '../data/kit';
 import { useLocal } from './toolkit/utils';
 import { useT } from '../i18n/index.jsx';
 
@@ -87,10 +88,11 @@ const ResultRow = ({ t, onGo }) => (
   </button>
 );
 
-export default function Header({ onSelectTool, onHome, onOpenCategory, onAssistant }) {
+export default function Header({ onSelectTool, onHome, onOpenCategory, onAssistant, onTemplates }) {
   const t = useT();
   const [openDropdown, setOpenDropdown] = useState(null);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [mobileCat, setMobileCat] = useState(null);
   const [q, setQ] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [recent, setRecent] = useLocal(RECENT_KEY, []);
@@ -379,15 +381,90 @@ export default function Header({ onSelectTool, onHome, onOpenCategory, onAssista
       {mobileOpen && (
         <div className="lg:hidden border-t border-slate-100 bg-white max-h-[75vh] overflow-y-auto pf-menu">
           <div className="px-4 py-3 space-y-1">
-            <p className="text-[9px] font-black uppercase tracking-widest text-slate-300 pt-1 pb-1">Categories</p>
+            {/* Quick tools — same strip as desktop nav */}
+            <div className="grid grid-cols-3 gap-2 pb-1">
+              {['merge', 'split', 'compress'].map((tid) => {
+                const tool = PDF_CATEGORIES.flatMap((c) => c.tools).find((x) => x.id === tid);
+                return tool ? (
+                  <button
+                    key={tid}
+                    onClick={() => { onSelectTool?.(tool); setMobileOpen(false); }}
+                    className="px-2 py-2.5 rounded-xl bg-slate-50 hover:bg-rose-50 hover:text-rose-600 text-[11px] font-bold uppercase tracking-wide text-slate-700 transition flex flex-col items-center gap-1.5"
+                  >
+                    <ToolGlyph icon={tool.icon} colorClass={tool.color} size={22} />
+                    {t(`nav_${tid}`)}
+                  </button>
+                ) : null;
+              })}
+            </div>
+            <div className="h-px bg-slate-100 my-2" />
+
+            {/* PDF tool groups — collapsible so the panel stays compact */}
+            <p className="text-[9px] font-black uppercase tracking-widest text-slate-300 pt-1 pb-1">PDF Tools</p>
+            {PDF_CATEGORIES.map((cat) => (
+              <div key={cat.title} className="rounded-xl">
+                <button
+                  onClick={() => setMobileCat((c) => (c === cat.title ? null : cat.title))}
+                  className="w-full px-3 py-2.5 rounded-xl text-left text-sm font-semibold text-slate-700 hover:bg-rose-50 hover:text-rose-600 transition flex items-center justify-between"
+                >
+                  <span className="flex items-center gap-2.5">
+                    <span className="w-7 h-7 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center shrink-0"><FileText className="w-3.5 h-3.5" /></span>
+                    {cat.title}
+                  </span>
+                  <span className="flex items-center gap-1 text-[10px] font-bold text-slate-400">
+                    {cat.tools.length}
+                    <ChevronDown className={`w-3.5 h-3.5 transition-transform ${mobileCat === cat.title ? 'rotate-180' : ''}`} />
+                  </span>
+                </button>
+                {mobileCat === cat.title && (
+                  <div className="pl-12 pr-2 pb-2 grid grid-cols-1 gap-0.5">
+                    {cat.tools.map((tool) => (
+                      <button
+                        key={tool.id}
+                        onClick={() => { onSelectTool?.(tool); setMobileOpen(false); }}
+                        className="w-full py-2 text-left flex items-center gap-2.5 group"
+                      >
+                        <ToolGlyph icon={tool.icon} colorClass={tool.color} size={20} />
+                        <span className="text-[13px] font-medium text-slate-600 group-hover:text-rose-600 transition truncate">{tool.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
             <button
               onClick={() => { onOpenCategory?.('pdf-tools'); setMobileOpen(false); }}
-              className="w-full px-3 py-2.5 rounded-xl text-left text-sm font-semibold text-slate-700 hover:bg-rose-50 hover:text-rose-600 transition flex items-center gap-2.5"
+              className="w-full px-3 py-2 text-left text-[11px] font-bold text-rose-500 hover:bg-rose-50 rounded-xl transition flex items-center gap-1"
             >
-              <span className="w-7 h-7 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center shrink-0"><FileText className="w-3.5 h-3.5" /></span>
-              PDF Tools <span className="text-[10px] font-bold text-slate-400">51 tools</span>
+              {t('s_browse')} <ArrowRight className="w-3 h-3" />
             </button>
             <div className="h-px bg-slate-100 my-2" />
+
+            {/* Other toolkits */}
+            <p className="text-[9px] font-black uppercase tracking-widest text-slate-300 pt-1 pb-1">More Tools</p>
+            {KIT_CATEGORIES.map((cat) => {
+              const Icon = cat.icon;
+              return (
+                <button
+                  key={cat.slug}
+                  onClick={() => { onOpenCategory?.(cat.slug); setMobileOpen(false); }}
+                  className="w-full px-3 py-2.5 rounded-xl text-left text-sm font-semibold text-slate-700 hover:bg-rose-50 hover:text-rose-600 transition flex items-center gap-2.5"
+                >
+                  <span className={`w-7 h-7 rounded-lg ${cat.chipBg} ${cat.accent} flex items-center justify-center shrink-0`}><Icon className="w-3.5 h-3.5" /></span>
+                  {cat.name}
+                </button>
+              );
+            })}
+            <div className="h-px bg-slate-100 my-2" />
+
+            {/* Templates + AI assistant */}
+            <button
+              onClick={() => { onTemplates?.(); setMobileOpen(false); }}
+              className="w-full px-3 py-2.5 rounded-xl text-left text-sm font-semibold text-slate-700 hover:bg-rose-50 hover:text-rose-600 transition flex items-center gap-2.5"
+            >
+              <span className="w-7 h-7 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center shrink-0"><FileText className="w-3.5 h-3.5" /></span>
+              {t('nav_templates')}
+            </button>
             <button
               onClick={() => { onAssistant?.(); setMobileOpen(false); }}
               className="w-full px-3 py-2.5 rounded-xl text-left text-sm font-semibold transition flex items-center gap-2.5 bg-rose-600 text-white"
@@ -395,6 +472,17 @@ export default function Header({ onSelectTool, onHome, onOpenCategory, onAssista
               <Sparkles className="w-4 h-4" />
               AI Assistant
             </button>
+
+            {/* Guest note — mirrors the desktop account dropdown info */}
+            <div className="pt-3 flex items-center gap-3 border-t border-slate-100 mt-3">
+              <span className="w-9 h-9 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+                <CircleUserRound className="w-5 h-5" strokeWidth={1.5} />
+              </span>
+              <div>
+                <p className="text-[12px] font-bold text-slate-800">Guest</p>
+                <p className="text-[10px] text-slate-400">Every tool is 100% free — no account needed</p>
+              </div>
+            </div>
           </div>
         </div>
       )}

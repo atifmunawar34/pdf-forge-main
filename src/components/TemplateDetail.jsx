@@ -11,9 +11,9 @@ export default function TemplateDetail({ tpl, allTemplates, onUse, onPreview, on
   // SEO: title, meta description, canonical, OG + FAQ structured data
   useEffect(() => {
     const prevTitle = document.title;
-    const title = tpl.seoTitle || `${tpl.name} Template — PDF Forge`;
+    const title = tpl.seoTitle || `${tpl.name} Template — ilovetopdf`;
     const desc = tpl.seoDescription || tpl.description;
-    const url = `https://atifmunawar34.github.io/pdf-forge/templates/${tpl.category}/${tpl.slug}`;
+    const url = `https://atifmunawar34.github.io/ilovetopdf/templates/${tpl.category}/${tpl.slug}`;
     document.title = title;
 
     const setMeta = (sel, attr, content) => {

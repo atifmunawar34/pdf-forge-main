@@ -32,7 +32,10 @@ const mdToHtml = (md) =>
     .replace(/^## (.*)$/gm, '<h2>$1</h2>').replace(/^# (.*)$/gm, '<h1>$1</h1>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/\*([^*]+)\*/g, '<em>$1</em>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, txt, url) => {
+      const safe = url.replace(/["'<>\s]/g, '');
+      return /^https?:|^mailto:|^\//.test(safe) ? `<a href="${safe}" target="_blank" rel="noopener noreferrer">${txt}</a>` : txt;
+    })
     .replace(/^- (.*)$/gm, '<li>$1</li>').replace(/(<li>.*<\/li>\n?)+/g, (m) => `<ul>${m}</ul>`)
     .replace(/^(?!<[hul]|<li)(.+)$/gm, '<p>$1</p>');
 

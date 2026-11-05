@@ -59,20 +59,20 @@ export const TOOL_INTROS = {
 
 // ---------- Related tools (shown after a successful operation) ----------
 export const RELATED_TOOLS = {
-  'pdf-to-word': ['pdf-to-jpg', 'compress', 'merge', 'edit'],
-  'pdf-to-jpg': ['pdf-to-word', 'compress', 'extract-images', 'merge'],
-  'pdf-to-excel': ['pdf-to-word', 'compress', 'extract-attachments', 'pdf-to-txt'],
-  'pdf-to-powerpoint': ['pdf-to-word', 'pdf-to-jpg', 'compress', 'merge'],
-  'word-to-pdf': ['compress', 'merge', 'protect', 'pdf-to-word'],
-  merge: ['split', 'compress', 'organize', 'protect'],
-  split: ['merge', 'extract', 'remove', 'compress'],
-  compress: ['merge', 'split', 'pdf-to-word', 'protect'],
-  protect: ['unlock', 'watermark', 'sign', 'redact'],
-  unlock: ['protect', 'compress', 'merge', 'split'],
-  edit: ['sign', 'watermark', 'compress', 'forms'],
-  sign: ['edit', 'protect', 'watermark', 'merge'],
-  ocr: ['summarizer', 'translate', 'pdf-to-word', 'edit'],
-  default: ['merge', 'compress', 'pdf-to-word', 'split'],
+  'pdf-to-word': ['pdf-to-jpg', 'compress', 'merge', 'edit', 'pdf-to-txt', 'split'],
+  'pdf-to-jpg': ['pdf-to-word', 'compress', 'extract-images', 'merge', 'rotate', 'protect'],
+  'pdf-to-excel': ['pdf-to-word', 'compress', 'extract-attachments', 'pdf-to-txt', 'merge', 'split'],
+  'pdf-to-powerpoint': ['pdf-to-word', 'pdf-to-jpg', 'compress', 'merge', 'edit', 'split'],
+  'word-to-pdf': ['compress', 'merge', 'protect', 'pdf-to-word', 'watermark', 'rotate'],
+  merge: ['compress', 'split', 'page-numbers', 'watermark', 'rotate', 'protect'],
+  split: ['merge', 'extract', 'remove', 'compress', 'rotate', 'page-numbers'],
+  compress: ['merge', 'split', 'pdf-to-word', 'protect', 'rotate', 'watermark'],
+  protect: ['unlock', 'watermark', 'sign', 'redact', 'compress', 'merge'],
+  unlock: ['protect', 'compress', 'merge', 'split', 'rotate', 'watermark'],
+  edit: ['sign', 'watermark', 'compress', 'forms', 'merge', 'rotate'],
+  sign: ['edit', 'protect', 'watermark', 'merge', 'compress', 'unlock'],
+  ocr: ['summarizer', 'translate', 'pdf-to-word', 'edit', 'compress', 'merge'],
+  default: ['merge', 'compress', 'split', 'pdf-to-word', 'rotate', 'protect'],
 };
 
 // ---------- Supported-format labels per tool (for error popups) ----------

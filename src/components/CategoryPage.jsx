@@ -2,31 +2,37 @@ import { useMemo, useState } from 'react';
 import { ChevronRight, Search, Star, ArrowRight } from 'lucide-react';
 import { KIT_CATEGORIES } from '../data/kit';
 import { useSeo } from './toolkit/utils';
+import ToolGlyph from './ToolGlyph';
 
 /**
  * Reusable category page — breadcrumb, search, featured, full grid, related.
  * Used by every kit category (image-tools, calculators, …) plus PDF tools.
  */
-const ToolCardBtn = ({ t, onOpen }) => (
+const ToolCardBtn = ({ t, onOpen, fallbackIcon, fallbackColor }) => (
   <button
     onClick={onOpen}
     className="pf-card pf-press group bg-white border border-slate-200 rounded-2xl p-5 text-left hover:shadow-lg hover:border-rose-200 cursor-pointer"
   >
-    <div className="flex items-start justify-between gap-2">
-      <h3 className="font-bold text-slate-800 group-hover:text-rose-600 transition text-sm leading-snug">{t.name}</h3>
-      {t.popular && <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400 shrink-0 mt-0.5" />}
+    <div className="flex items-start gap-3">
+      <ToolGlyph icon={t.icon || fallbackIcon || Search} colorClass={t.color || fallbackColor || 'text-rose-600'} size={34} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start justify-between gap-2">
+          <h3 className="font-bold text-slate-800 group-hover:text-rose-600 transition text-sm leading-snug">{t.name}</h3>
+          {t.popular && <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400 shrink-0 mt-0.5" />}
+        </div>
+        <p className="mt-1.5 text-xs text-slate-500 leading-relaxed line-clamp-2">{t.desc}</p>
+        <span className="mt-3 inline-flex items-center gap-1 text-[11px] font-bold text-rose-500 opacity-0 group-hover:opacity-100 transition">
+          Open tool <ArrowRight className="w-3 h-3" />
+        </span>
+      </div>
     </div>
-    <p className="mt-1.5 text-xs text-slate-500 leading-relaxed line-clamp-2">{t.desc}</p>
-    <span className="mt-3 inline-flex items-center gap-1 text-[11px] font-bold text-rose-500 opacity-0 group-hover:opacity-100 transition">
-      Open tool <ArrowRight className="w-3 h-3" />
-    </span>
   </button>
 );
 
 export default function CategoryPage({ category, onOpenTool, onOpenCategory, onHome }) {
   const [q, setQ] = useState('');
   useSeo({
-    title: `${category.name} — Free Online Tools | PDF Forge`,
+    title: `${category.name} — Free Online Tools | ilovetopdf`,
     description: category.seoDesc || category.desc,
     slug: category.slug,
   });
@@ -44,7 +50,14 @@ export default function CategoryPage({ category, onOpenTool, onOpenCategory, onH
   const featured = category.tools.filter((t) => t.featured).slice(0, 6);
   const related = KIT_CATEGORIES.filter((c) => c.slug !== category.slug).slice(0, 4);
 
-  const cardOf = (t) => <ToolCardBtn key={t.id} t={t} onOpen={() => onOpenTool(category, t)} />;
+  const cardOf = (t) => (
+    <ToolCardBtn
+      key={t.id} t={t}
+      fallbackIcon={category.icon}
+      fallbackColor={category.accent}
+      onOpen={() => onOpenTool(category, t)}
+    />
+  );
 
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-12">
@@ -58,9 +71,7 @@ export default function CategoryPage({ category, onOpenTool, onOpenCategory, onH
       {/* Header */}
       <div className="mb-8 pf-rise" style={{ '--d': '60ms' }}>
         <div className="flex items-center gap-3">
-          <span className={`w-11 h-11 rounded-2xl ${category.chipBg || 'bg-rose-50'} ${category.accent || 'text-rose-600'} flex items-center justify-center shrink-0`}>
-            {category.icon ? <category.icon className="w-5 h-5" /> : <Search className="w-5 h-5" />}
-          </span>
+          <ToolGlyph icon={category.icon || Search} colorClass={category.accent || 'text-rose-600'} size={44} />
           <h1 className="text-2xl sm:text-4xl font-black text-slate-900 tracking-tight">{category.name}</h1>
         </div>
         <p className="mt-2 text-sm sm:text-base text-slate-500 max-w-2xl">{category.desc}</p>

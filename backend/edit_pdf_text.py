@@ -322,14 +322,23 @@ def apply_replace(doc, page, e):
     lh = size * float(e.get("lineHeight") or 1.22)
     align = e.get("align") or "left"
     max_h = e.get("maxH")
+<<<<<<< HEAD
+=======
+
+    # same line count — draw each line at its ORIGINAL position so
+    # indentation, alignment and wide in-line gaps are preserved
+>>>>>>> bdd862d037b13f9836bcb07cd164a4e1641e4a20
     kw = dict(fontsize=size, color=color, render_mode=0)
     if fontfile:
         kw.update(fontname=fontname, fontfile=fontfile)
     else:
         kw.update(fontname=fontname)
+<<<<<<< HEAD
 
     # same line count — draw each line at its ORIGINAL position so
     # indentation, alignment and wide in-line gaps are preserved
+=======
+>>>>>>> bdd862d037b13f9836bcb07cd164a4e1641e4a20
     orig_pts = e.get("lines") or []
     draft_lines = text.split("\n")
     if orig_pts and len(draft_lines) == len(orig_pts):
@@ -338,6 +347,20 @@ def apply_replace(doc, page, e):
                 page.insert_text(tuple(orig_pts[i]), ln, **kw)
         return
 
+<<<<<<< HEAD
+=======
+    # original was ONE line and the draft is one paragraph — shrink the font
+    # until the draft fits on a single line instead of wrapping into the
+    # cell below (matches the live preview's single-line auto-fit)
+    if len(orig_pts) <= 1 and "\n" not in text:
+        orig_size = size
+        while mfont.text_length(text, fontsize=size) > max_w and size > orig_size * 0.4:
+            size *= 0.94
+        kw["fontsize"] = size
+        page.insert_text((rect.x0, by), text, **kw)
+        return
+
+>>>>>>> bdd862d037b13f9836bcb07cd164a4e1641e4a20
     lines = wrap_lines(mfont, text, size, max_w)
     # auto-shrink so wrapped lines stay inside the cell instead of
     # spilling over the boxes below
@@ -346,10 +369,16 @@ def apply_replace(doc, page, e):
             size *= 0.88
             lh = size * float(e.get("lineHeight") or 1.22)
             lines = wrap_lines(mfont, text, size, max_w)
+<<<<<<< HEAD
         kw["fontsize"] = size
     # vertically centre the lines in the available cell room so multi-line
     # edits stay middle-aligned like the original text
     voff = max(0.0, (float(max_h) - len(lines) * lh) / 2) if max_h else 0.0
+=======
+    # top-anchored at the original baseline — lines grow downward inside the
+    # cell's room (shrunk to fit) so the edit never slides into the row below
+    voff = 0.0
+>>>>>>> bdd862d037b13f9836bcb07cd164a4e1641e4a20
     for i, ln in enumerate(lines):
         if align == "left":
             lx = bx
@@ -359,10 +388,60 @@ def apply_replace(doc, page, e):
         page.insert_text((lx, by + voff + i * lh), ln, **kw)
 
 
+def _lift_image_bytes(doc, page, xref, rect):
+    """Bytes of the displayed image (shared object or inline capture)."""
+    if xref:
+        try:
+            return doc.extract_image(xref)["image"]
+        except Exception:
+            pass
+    pix = page.get_pixmap(clip=rect, dpi=150)
+    return ("__pixmap__", pix)
+
+
+def apply_imgedit(doc, page, e):
+    """Image ops previewed live in the editor — applied here at save time.
+    Redactions keep text so text under a moved/replaced image survives."""
+    rect = fitz.Rect(e["rect"])
+    xref = int(e.get("xref") or 0)
+    kind = e.get("action")
+
+    if kind == "imgdel":
+        page.add_redact_annot(rect, fill=False)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE,
+                              graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                              text=fitz.PDF_REDACT_TEXT_NONE)
+        return
+
+    if kind == "imgmove":
+        new = fitz.Rect(e["new"])
+        data = _lift_image_bytes(doc, page, xref, rect)
+        page.add_redact_annot(rect, fill=False)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE,
+                              graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                              text=fitz.PDF_REDACT_TEXT_NONE)
+        if isinstance(data, tuple):
+            page.insert_image(new, pixmap=data[1])
+        else:
+            page.insert_image(new, stream=data)
+        return
+
+    if kind == "imgreplace":
+        page.add_redact_annot(rect, fill=False)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE,
+                              graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                              text=fitz.PDF_REDACT_TEXT_NONE)
+        page.insert_image(rect, filename=e["imgPath"])
+        return
+
+
 def apply_edit(doc, page, e):
     action = e.get("action")
     if action == "replace":
         apply_replace(doc, page, e)
+        return
+    if action in ("imgmove", "imgdel", "imgreplace"):
+        apply_imgedit(doc, page, e)
         return
 
     if action in ("whiteout", "redact"):

@@ -1,5 +1,5 @@
 """
-Fallback page/metadata operations for PDF Forge — used when pdf-lib
+Fallback page/metadata operations for iLoveToPDF — used when pdf-lib
 cannot parse a file (broken xref, linearized, hybrid streams, etc.).
 
 Usage:
@@ -38,7 +38,9 @@ def main():
             doc.select(list(range(len(doc) - 1, -1, -1)))
 
         elif mode == "insert-blank":
-            count = max(1, int(params.get("count", 1)))
+            # Bound the insert count — an unbounded count is a resource
+            # bomb (a million blank pages ties up the worker for minutes).
+            count = max(1, min(1000, int(params.get("count", 1))))
             position = params.get("position", "end")
             after_page = int(params.get("afterPage", 0))
             w, h = (595.0, 842.0)
@@ -78,7 +80,10 @@ def main():
         elif mode == "grayscale":
             new = fitz.open()
             for page in doc:
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                # Cap the rendered pixmap (~4000px long side) — a hostile
+                # MediaBox would otherwise force a multi-GB allocation.
+                z = min(1.5, 4000.0 / max(page.rect.width, page.rect.height, 1))
+                pix = page.get_pixmap(matrix=fitz.Matrix(z, z))
                 gray = fitz.Pixmap(fitz.csGRAY, pix)
                 np = new.new_page(width=page.rect.width, height=page.rect.height)
                 np.insert_image(np.rect, pixmap=gray)

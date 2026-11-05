@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { UploadCloud, X, AlertCircle, Loader2, ArrowRight } from 'lucide-react';
+import ToolGlyph from './ToolGlyph';
 import {
   checkPdfPassword,
   checkDocxPassword,
@@ -8,14 +9,36 @@ import {
 } from '../utils/pdfWorker';
 import { popupBus } from '../utils/popupBus';
 import { MAX_FILE_MB, TOOL_FORMATS } from '../data/popupConfig';
+import { useT } from '../i18n/index.jsx';
+
+// Guard: a stray double-trigger of input.click() would queue a second
+// native file dialog that stays open after the file is already added.
+let lastPickerOpen = 0;
+const openModalPicker = () => {
+  const now = Date.now();
+  if (now - lastPickerOpen < 800) return;
+  lastPickerOpen = now;
+  document.getElementById('modalFileInput')?.click();
+};
 
 export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles, initialImageCards, initialHtmlCode, initialHtmlMode }) {
+  const t = useT();
   const [errorMsg, setErrorMsg] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
   const [, setLockedFiles] = useState([]);
   const [htmlMode, setHtmlMode] = useState('file');
   const [rawHtml, setRawHtml] = useState('');
   const [isDragging, setIsDragging] = useState(false);
+  // Bumping this remounts the file input — if the native picker is still
+  // open, detaching its input forces the dialog to close.
+  const [inputEpoch, setInputEpoch] = useState(0);
+
+  // Lock background scroll while the modal is open
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
 
   const getFileInputAccept = () => {
     if (tool.id === 'jpg-to-pdf' || tool.id === 'scan') return 'image/jpeg,image/png,image/webp';
@@ -58,7 +81,7 @@ export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles,
         type: 'unsupported',
         fileName: badFile.name,
         formats: allowed,
-        onRetry: () => document.getElementById('modalFileInput')?.click(),
+        onRetry: openModalPicker,
       });
       return;
     }
@@ -155,8 +178,8 @@ export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles,
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-white rounded-3xl w-full max-w-lg p-6 sm:p-8 shadow-2xl border border-slate-100 relative animate-in fade-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto">
+    <div className="fixed inset-x-0 top-16 bottom-0 z-50 bg-slate-900/45 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl w-full max-w-xl p-6 sm:p-10 shadow-2xl border border-slate-100 relative animate-in fade-in zoom-in-95 duration-150 max-h-full overflow-y-auto">
         <button
           onClick={onClose}
           className="absolute top-5 right-5 p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 transition cursor-pointer"
@@ -164,14 +187,12 @@ export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles,
           <X className="w-5 h-5" />
         </button>
 
-        <div className="flex items-center space-x-3 mb-6">
-          <div className={`w-10 h-10 rounded-xl ${tool.bg} ${tool.color} flex items-center justify-center`}>
-            <tool.icon className="w-5 h-5" />
-          </div>
-          <div>
-            <h3 className="text-lg font-bold text-slate-900">{tool.name}</h3>
-            <p className="text-xs text-slate-500">Security Verification & Upload</p>
-          </div>
+        <div className="text-center mb-7">
+          <span className="inline-block mb-3">
+            <ToolGlyph icon={tool.icon} colorClass={tool.color} size={48} />
+          </span>
+          <h3 className="text-2xl font-bold text-slate-900">{tool.name}</h3>
+          <p className="mt-1.5 text-sm text-slate-500 max-w-sm mx-auto">{tool.desc}</p>
         </div>
 
         {/* Notice Box */}
@@ -255,63 +276,67 @@ export default function ToolModal({ tool, onClose, onLaunchStudio, initialFiles,
           <div
             role="button"
             tabIndex={0}
-            onClick={() => { if (!isVerifying) document.getElementById('modalFileInput')?.click(); }}
-            onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && !isVerifying) { e.preventDefault(); document.getElementById('modalFileInput')?.click(); } }}
+            onClick={() => { if (!isVerifying) openModalPicker(); }}
+            onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && !isVerifying) { e.preventDefault(); openModalPicker(); } }}
             onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
             onDragLeave={() => setIsDragging(false)}
             onDrop={(e) => {
               e.preventDefault();
+              e.stopPropagation();
               setIsDragging(false);
+              setInputEpoch((n) => n + 1);
               handleFilesSelected(e.dataTransfer.files);
             }}
-            className={`border-2 border-dashed rounded-2xl p-8 text-center transition cursor-pointer ${
+            className={`border-2 border-dashed rounded-2xl px-6 py-10 text-center transition cursor-pointer ${
               isDragging
                 ? 'border-rose-500 bg-rose-50/60 scale-[1.01]'
-                : 'border-slate-200 hover:border-rose-400 bg-slate-50/50 hover:bg-rose-50/30'
+                : 'border-slate-300 hover:border-rose-400 bg-slate-50/60 hover:bg-rose-50/30'
             }`}
           >
             <input
               type="file"
+              key={inputEpoch}
               id="modalFileInput"
               multiple={tool.id === 'merge' || tool.id === 'jpg-to-pdf' || tool.id === 'scan' || tool.id === 'compare' || tool.id === 'png-to-pdf' || tool.id === 'webp-to-pdf'}
               accept={getFileInputAccept()}
               className="hidden"
-              onChange={(e) => handleFilesSelected(e.target.files)}
+              onChange={(e) => { handleFilesSelected(e.target.files); e.target.value = ''; }}
             />
-            <div className="space-y-2">
-              {isVerifying ? (
-                <div className="py-4 space-y-2">
-                  <Loader2 className="w-8 h-8 animate-spin mx-auto text-rose-500" />
-                  <p className="text-xs font-semibold text-slate-600">Verifying file security...</p>
-                </div>
-              ) : (
-                <>
-                  <UploadCloud className={`w-10 h-10 mx-auto transition ${isDragging ? 'text-rose-500 pf-float' : 'text-slate-400'}`} />
-                  <p className="text-sm font-medium text-slate-700">
-                    Drop {tool.id === 'merge' || tool.id === 'compare' ? 'PDF files' : tool.id === 'scan' || tool.id === 'jpg-to-pdf' ? 'images' : 'document'} here or <span className="text-rose-500 font-bold">browse</span>
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    {tool.id === 'merge'
-                      ? 'Select multiple PDFs to visually organize and merge'
-                      : tool.id === 'compare'
-                      ? 'Select exactly two PDFs to compare side by side'
-                      : tool.id === 'scan'
-                      ? 'Upload scanned photos, or open the camera in the next step'
-                      : tool.id === 'unlock'
-                      ? 'Select the locked PDF to decrypt'
-                      : tool.id === 'repair'
-                      ? 'Upload a damaged or unreadable PDF to rebuild it'
-                      : 'Files are checked for password security before editing'}
-                  </p>
-                </>
-              )}
-            </div>
+            {isVerifying ? (
+              <div className="py-4 space-y-2">
+                <Loader2 className="w-8 h-8 animate-spin mx-auto text-rose-600" />
+                <p className="text-xs font-semibold text-slate-600">Verifying file security...</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <span className="inline-flex items-center gap-2.5 bg-rose-600 hover:bg-rose-700 text-white text-lg font-bold px-8 py-4 rounded-xl shadow-md shadow-rose-600/25 transition">
+                  <UploadCloud className="w-6 h-6" />
+                  {tool.id === 'merge' || tool.id === 'compare' ? t('upload_select') : tool.id === 'scan' || tool.id === 'jpg-to-pdf' ? t('sel_img') : t('sel_file')}
+                </span>
+                <p className="text-sm text-slate-500">
+                  {tool.id === 'merge' || tool.id === 'compare' ? t('upload_drop') : tool.id === 'scan' || tool.id === 'jpg-to-pdf' ? t('drop_img') : t('upload_drop')}
+                </p>
+                <p className="text-[11px] text-slate-400 max-w-xs mx-auto">
+                  {tool.id === 'merge'
+                    ? 'Select multiple PDFs to visually organize and merge'
+                    : tool.id === 'compare'
+                    ? 'Select exactly two PDFs to compare side by side'
+                    : tool.id === 'scan'
+                    ? 'Upload scanned photos, or open the camera in the next step'
+                    : tool.id === 'unlock'
+                    ? 'Select the locked PDF to decrypt'
+                    : tool.id === 'repair'
+                    ? 'Upload a damaged or unreadable PDF to rebuild it'
+                    : 'Files are checked for password security before editing'}
+                </p>
+              </div>
+            )}
           </div>
           {tool.id === 'scan' && !isVerifying && (
             <button
               type="button"
               onClick={() => onLaunchStudio(tool, { files: [], imageCards: [] })}
-              className="mt-4 w-full py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold text-sm transition cursor-pointer"
+              className="mt-4 w-full py-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold text-sm transition cursor-pointer"
             >
               Use Camera
             </button>

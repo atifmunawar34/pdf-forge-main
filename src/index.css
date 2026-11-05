@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Site-wide UI scale — uniform 1.2x on every page */
+#root { zoom: 1.2; }
+
 /* ============ Animation system ============ */
 /* Centralized timing + easing — one motion language for the whole site.
    Durations: micro 120-180ms, normal 200-300ms, medium 300-450ms, large 450-600ms */

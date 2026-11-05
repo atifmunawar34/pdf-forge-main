@@ -197,7 +197,7 @@ export function planRequest(raw) {
   // greetings & small talk — instant local replies, no provider needed
   if (/^(hi|hello|hey|salam|salaam|aoa|yo|good (morning|afternoon|evening))\b/.test(q) && q.split(' ').length < 6) {
     plan.type = 'reply';
-    plan.message = "Hello. I'm the PDF Forge assistant — I can complete tasks across the entire platform: PDF editing and conversion, image processing, calculations, QR codes, document generation, and more.\n\nDescribe what you need in plain language and I'll take care of it.";
+    plan.message = "Hello. I'm the ilovetopdf assistant — I can complete tasks across the entire platform: PDF editing and conversion, image processing, calculations, QR codes, document generation, and more.\n\nDescribe what you need in plain language and I'll take care of it.";
     return plan;
   }
   if (/\b(thanks|thank you|thx|shukria|shukriya)\b/.test(q) && q.split(' ').length < 8) {

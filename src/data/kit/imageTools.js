@@ -36,7 +36,7 @@ export const IMAGE_TOOLS = [
   T('image-quality-reducer', 'Image Quality Reducer', 'Lower image quality deliberately to hit a target file size.', { op: 'compress', options: [{ key: 'quality', ...qOpt, default: 0.4 }, fmtOpt], action: 'Reduce Quality' }),
   T('background-remover', 'Background Remover', 'Remove solid-color backgrounds from images — chroma-key cutout, free.', { op: 'bgremove', action: 'Remove Background', options: [{ key: 'tolerance', label: 'Tolerance (0–255)', type: 'number', default: 32, min: 0, max: 255, hint: 'Higher = removes more similar colors' }] }, { featured: true }),
   T('image-watermark', 'Image Watermark', 'Add a text watermark to images — position, size and opacity controls.', { op: 'watermark', action: 'Add Watermark', options: [
-    { key: 'text', label: 'Watermark text', type: 'text', default: '© PDF Forge' },
+    { key: 'text', label: 'Watermark text', type: 'text', default: '© ilovetopdf' },
     { key: 'position', label: 'Position', type: 'select', options: ['bottom-right', 'bottom-left', 'top-right', 'top-left', 'center'], default: 'bottom-right' },
     { key: 'opacity', label: 'Opacity (0–1)', type: 'number', default: 0.5, min: 0.05, max: 1, step: 0.05 },
   ] }),

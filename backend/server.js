@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
+const rateLimit = require('express-rate-limit');
 const libre = require('libreoffice-convert');
 const util = require('util');
 const { spawn } = require('child_process');
@@ -9,6 +10,8 @@ const path = require('path');
 const os = require('os');
 
 const PYTHON_COMMANDS = process.platform === 'win32' ? ['python', 'py', 'python3'] : ['python3', 'python'];
+// Max wall-clock time for one conversion subprocess (default 5 min, env-overridable).
+const PYTHON_TIMEOUT_MS = Number(process.env.PYTHON_TIMEOUT_MS) || 5 * 60 * 1000;
 
 function runPython(args) {
   return new Promise((resolve, reject) => {
@@ -20,19 +23,32 @@ function runPython(args) {
 
       const cmd = PYTHON_COMMANDS[index];
       const py = spawn(cmd, args, { windowsHide: true });
+      // Kill a hung subprocess rather than holding the request open forever.
+      let timedOut = false;
+      const killTimer = setTimeout(() => { timedOut = true; py.kill('SIGKILL'); }, PYTHON_TIMEOUT_MS);
       let stderr = '';
+      let stdout = '';
 
       py.stderr.on('data', (data) => {
         stderr += data.toString();
       });
+      py.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
 
       py.on('error', (err) => {
+        clearTimeout(killTimer);
         tryNext(index + 1, err);
       });
 
       py.on('close', (code) => {
+        clearTimeout(killTimer);
         if (code === 0) {
-          resolve();
+          resolve(stdout);
+          return;
+        }
+        if (timedOut) {
+          reject(new Error('Conversion timed out.'));
           return;
         }
 
@@ -55,21 +71,102 @@ function runPython(args) {
 }
 
 const libreConvert = util.promisify(libre.convert);
+// Spawn with the same kill-switch as runPython — a hung subprocess must
+// not hold its worker slot open forever.
+function spawnBounded(cmd, args) {
+  const child = spawn(cmd, args, { windowsHide: true });
+  const killTimer = setTimeout(() => child.kill('SIGKILL'), PYTHON_TIMEOUT_MS);
+  child.on('close', () => clearTimeout(killTimer));
+  return child;
+}
 const app = express();
-const upload = multer({ storage: multer.memoryStorage() });
+app.disable('x-powered-by');
+// Cap uploads — memoryStorage buffers the whole file in RAM, so an
+// unbounded upload is a trivial memory-exhaustion DoS.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024, files: 10 }, // 100 MB
+});
 
-//cors for local 
-//app.use(cors());
+// A user-supplied filename goes straight into Content-Disposition — strip
+// quotes, path separators and control chars so it can't break the header
+// (or smuggle a path when echoed elsewhere).
+const baseName = (originalname) =>
+  String(originalname || 'file')
+    .replace(/\.[^/.]+$/, '')
+    .replace(/["\\\r\n]/g, '_')
+    .replace(/\/+/g, '_')
+    .trim() || 'file';
 
-//cors for production 
+// Subprocess stderr can contain absolute paths, Python tracebacks and
+// version fingerprints — never echo it verbatim to the client. Keep only
+// the last meaningful line (e.g. "Incorrect password.") with paths defanged.
+function clientErr(error, fallback) {
+  const lines = String(error?.message || '')
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^[\w./-]+ failed with code \d+:\s*/i, '').trim())
+    .filter((l) => l && !/^(Traceback|File\s*"|~*\^+)/.test(l));
+  const last = (lines[lines.length - 1] || '')
+    .replace(/[A-Za-z]:[\\/][^\s"']*/g, '…')
+    .replace(/\/(?:[\w+.-]+\/){2,}[\w+.-]*/g, '…')
+    .slice(0, 300);
+  return last || fallback;
+}
+
+// CORS — allowlist only. Production origins come from CORS_ORIGINS env
+// (comma-separated, e.g. "https://ilovetopdf.com,https://www.ilovetopdf.com").
+// Dev defaults cover localhost and private-LAN frontends on any port.
+// Requests without an Origin header (curl, server-to-server) are not
+// browser cross-origin calls and are always allowed.
+const allowedOrigins = new Set(
+  (process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean)
+);
+const OCTET = '(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)';
+const DEV_ORIGIN = new RegExp(
+  `^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\]|192\\.168\\.${OCTET}\\.${OCTET}|10\\.${OCTET}\\.${OCTET}\\.${OCTET}|172\\.(1[6-9]|2\\d|3[01])\\.${OCTET}\\.${OCTET})(:\\d+)?$`
+);
+
 app.use(cors({
-  origin: '*', // Or specify: ['https://your-app.vercel.app', 'https://<username>.github.io']
+  origin(origin, cb) {
+    if (!origin || allowedOrigins.has(origin) || DEV_ORIGIN.test(origin)) return cb(null, true);
+    return cb(new Error(`CORS: origin ${origin} not allowed`));
+  },
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type'],
+  allowedHeaders: ['Content-Type', 'x-admin-key'],
   exposedHeaders: ['x-original-size', 'x-compressed-size', 'Content-Disposition']
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
+
+// API responses contain user documents — never let shared caches store them,
+// and don't let browsers MIME-sniff downloads into active content.
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  res.set('X-Content-Type-Options', 'nosniff');
+  next();
+});
+
+// ---- Rate limiting -----------------------------------------------------
+// Conversions spawn Python/LibreOffice subprocesses — a single request can
+// burn seconds of CPU, so the heavy endpoints get a tight per-IP budget.
+const json429 = { error: 'Too many requests — please slow down and try again later.' };
+const limiterOpts = { standardHeaders: true, legacyHeaders: false, message: json429 };
+
+// Safety net for every /api call (generous — real limits live below).
+app.use('/api', rateLimit({ ...limiterOpts, windowMs: 15 * 60 * 1000, max: 600 }));
+
+// Heavy conversion/upload endpoints: 60 per 15 min per IP.
+const HEAVY_ROUTES = [
+  '/api/convert/', '/api/compress-pdf', '/api/extract-', '/api/page-ops',
+  '/api/protect-pdf', '/api/unlock-pdf', '/api/crop-pdf', '/api/edit-pdf-',
+  '/api/pdf-images', '/api/docx-from-text',
+];
+HEAVY_ROUTES.forEach((p) => app.use(p, rateLimit({ ...limiterOpts, windowMs: 15 * 60 * 1000, max: 60 })));
+
+// AI proxy costs real money upstream — keep it tighter.
+app.use('/api/ai', rateLimit({ ...limiterOpts, windowMs: 15 * 60 * 1000, max: 30 }));
+// Inquiry form is a public write — cap it to stop spam-flooding the store.
+app.use('/api/inquiries', rateLimit({ ...limiterOpts, windowMs: 60 * 60 * 1000, max: 20 }));
 
 // Office/HTML to PDF via the PyMuPDF Story engine (office_to_pdf.py) — no LibreOffice needed
 async function convertViaPython(fileBuffer, ext) {
@@ -94,135 +191,6 @@ async function convertDocxToPdf(fileBuffer, originalFilename) {
   return convertViaPython(fileBuffer, ext === '.doc' ? '.docx' : ext);
 }
 
-// Ghostscript-based legacy converter (kept for reference — superseded by convertViaPython)
-async function _convertDocxToPdfLegacy(fileBuffer, originalFilename) {
-  const tempId = `docx_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-  const tempDir = os.tmpdir();
-  const inputPath = path.join(tempDir, `${tempId}_${originalFilename}`);
-  const _rawPdfPath = path.join(tempDir, `${tempId}_raw.pdf`);
-  const finalPdfPath = path.join(tempDir, `${tempId}_final.pdf`);
-  const userProfileDir = path.join(tempDir, `lo_profile_${tempId}`);
-
-  await fs.writeFile(inputPath, fileBuffer);
-
-  // 1. Convert via LibreOffice using native layout fidelity settings
-  const loArgs = [
-    `-env:UserInstallation=file://${userProfileDir}`,
-    '--headless',
-    '--invisible',
-    '--nodefault',
-    '--nofirststartwizard',
-    '--nolockcheck',
-    '--nologo',
-    '--norestore',
-    '--convert-to',
-    'pdf:writer_pdf_Export:{"SelectPdfVersion":{"type":"long","value":"1"},"UseTaggedPDF":{"type":"boolean","value":"true"},"ExportNotes":{"type":"boolean","value":"false"}}',
-    '--outdir',
-    tempDir,
-    inputPath,
-  ];
-
-  await new Promise((resolve) => {
-    const lo = spawn('soffice', loArgs);
-    lo.on('close', () => resolve());
-    lo.on('error', () => resolve());
-  });
-
-  const generatedPdfName = path.basename(inputPath, path.extname(inputPath)) + '.pdf';
-  const generatedPdfPath = path.join(tempDir, generatedPdfName);
-
-  // Fallback if direct soffice fails
-  if (!(await fs.stat(generatedPdfPath).catch(() => null))) {
-    const fallbackBuffer = await libreConvert(fileBuffer, '.pdf', undefined);
-    await fs.writeFile(generatedPdfPath, fallbackBuffer);
-  }
-
-  // 2. Universal Post-Processor: Reconcile DOCX intended pages vs generated PDF pages
-  const pyReconcile = `
-import sys
-import os
-import fitz
-import docx
-
-docx_file = sys.argv[1]
-pdf_in = sys.argv[2]
-pdf_out = sys.argv[3]
-
-try:
-    expected_pages = 0
-    # Determine Word document target pagination from XML metadata & break markers
-    if docx_file.lower().endswith('.docx'):
-        doc = docx.Document(docx_file)
-        # Check core properties (if Word cached the page count)
-        try:
-            core_props = doc.core_properties
-            if hasattr(core_props, 'pages') and core_props.pages:
-                expected_pages = int(core_props.pages)
-        except Exception:
-            expected_pages = 0
-
-        # Count explicit hard page breaks and section breaks
-        explicit_breaks = 1
-        for p in doc.paragraphs:
-            for r in p.runs:
-                if 'w:br' in r._element.xml and 'type="page"' in r._element.xml:
-                    explicit_breaks += 1
-        for t in doc.tables:
-            for r in t.rows:
-                for c in r.cells:
-                    for p in c.paragraphs:
-                        for run in p.runs:
-                            if 'w:br' in run._element.xml and 'type="page"' in run._element.xml:
-                                explicit_breaks += 1
-
-        expected_pages = max(expected_pages, explicit_breaks)
-
-    # Inspect rendered PDF
-    pdf_doc = fitz.open(pdf_in)
-    actual_pages = len(pdf_doc)
-
-    # If an extra blank/trailing overflow page was created at the very end with no real content
-    if expected_pages > 0 and actual_pages > expected_pages:
-        last_page = pdf_doc[-1]
-        text_content = last_page.get_text().strip()
-        drawings = last_page.get_drawings()
-        images = last_page.get_images()
-
-        # If last page contains only trailing whitespace, margins, or zero meaningful drawings
-        if not text_content and len(drawings) == 0 and len(images) == 0:
-            pdf_doc.delete_page(actual_pages - 1)
-
-    pdf_doc.save(pdf_out, garbage=3, deflate=True)
-    pdf_doc.close()
-    sys.exit(0)
-except Exception:
-    import shutil
-    shutil.copy(pdf_in, pdf_out)
-    sys.exit(0)
-`;
-
-  try {
-    await new Promise((resolve) => {
-      const py = spawn('python3', ['-c', pyReconcile, inputPath, generatedPdfPath, finalPdfPath]);
-      py.on('close', () => resolve());
-      py.on('error', () => resolve());
-    });
-  } catch {
-    // Proceed with generated PDF if post-processor has issues
-  }
-
-  const outputTarget = (await fs.stat(finalPdfPath).catch(() => null)) ? finalPdfPath : generatedPdfPath;
-  const pdfBuffer = await fs.readFile(outputTarget);
-
-  // Cleanup
-  await fs.unlink(inputPath).catch(() => {});
-  await fs.unlink(generatedPdfPath).catch(() => {});
-  await fs.unlink(finalPdfPath).catch(() => {});
-  await fs.rm(userProfileDir, { recursive: true, force: true }).catch(() => {});
-
-  return pdfBuffer;
-}
-
 // Word to PDF Route
 app.post('/api/convert/word-to-pdf', upload.single('file'), async (req, res) => {
   try {
@@ -244,7 +212,7 @@ app.post('/api/convert/word-to-pdf', upload.single('file'), async (req, res) => 
     }
 
     const pdfBuffer = await convertDocxToPdf(buffer, req.file.originalname);
-    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    const originalName = baseName(req.file.originalname);
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${originalName}.pdf"`);
@@ -281,7 +249,7 @@ app.post('/api/convert/powerpoint-to-pdf', upload.single('file'), async (req, re
 
     const ext = path.extname(req.file.originalname).toLowerCase() === '.ppt' ? '.pptx' : path.extname(req.file.originalname).toLowerCase() || '.pptx';
     const pdfBuffer = await convertViaPython(buffer, ext);
-    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    const originalName = baseName(req.file.originalname);
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${originalName}.pdf"`);
@@ -306,7 +274,7 @@ app.post('/api/convert/html-to-pdf', upload.single('file'), async (req, res) => 
 
     const pdfBuffer = await convertViaPython(htmlBuffer, '.html');
     const originalName = req.file
-      ? req.file.originalname.replace(/\.[^/.]+$/, '')
+      ? baseName(req.file.originalname)
       : 'rendered_html';
 
     res.setHeader('Content-Type', 'application/pdf');
@@ -345,7 +313,7 @@ app.post('/api/convert/excel-to-pdf', upload.single('file'), async (req, res) =>
 
     const ext = path.extname(req.file.originalname).toLowerCase() === '.xls' ? '.xlsx' : path.extname(req.file.originalname).toLowerCase() || '.xlsx';
     const pdfBuffer = await convertViaPython(buffer, ext);
-    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    const originalName = baseName(req.file.originalname);
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${originalName}.pdf"`);
@@ -393,7 +361,7 @@ app.post('/api/compress-pdf', upload.single('file'), async (req, res) => {
     // Fallback if the file is already maximally compressed
     const finalBuffer = compressedBuffer.length < originalSize ? compressedBuffer : req.file.buffer;
 
-    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    const originalName = baseName(req.file.originalname);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="compressed_${originalName}.pdf"`);
     res.setHeader('x-original-size', originalSize.toString());
@@ -425,7 +393,7 @@ app.post('/api/convert/pdf-to-word', upload.single('file'), async (req, res) => 
     await runPython([pythonScriptPath, inputPdfPath, outputDocxPath]);
 
     const docxBuffer = await fs.readFile(outputDocxPath);
-    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    const originalName = baseName(req.file.originalname);
 
     res.setHeader(
       'Content-Type',
@@ -464,7 +432,7 @@ app.post('/api/convert/pdf-to-powerpoint', upload.single('file'), async (req, re
     ]);
 
     const pptxBuffer = await fs.readFile(outputPptxPath);
-    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    const originalName = baseName(req.file.originalname);
 
     res.setHeader(
       'Content-Type',
@@ -497,7 +465,7 @@ app.post('/api/convert/pdf-to-excel', upload.single('file'), async (req, res) =>
     await fs.writeFile(inputPdfPath, req.file.buffer);
 
     await new Promise((resolve, reject) => {
-      const py = spawn('python3', [pythonScriptPath, inputPdfPath, outputXlsxPath]);
+      const py = spawnBounded('python3', [pythonScriptPath, inputPdfPath, outputXlsxPath]);
 
       let stderr = '';
       py.stderr.on('data', (data) => {
@@ -516,7 +484,7 @@ app.post('/api/convert/pdf-to-excel', upload.single('file'), async (req, res) =>
     });
 
     const xlsxBuffer = await fs.readFile(outputXlsxPath);
-    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    const originalName = baseName(req.file.originalname);
 
     res.setHeader(
       'Content-Type',
@@ -549,14 +517,13 @@ async function extractAssetsViaPython(req, res, mode) {
     await fs.writeFile(inputPdfPath, req.file.buffer);
     await runPython([pythonScriptPath, mode, inputPdfPath, outputZipPath]);
     const zipBuffer = await fs.readFile(outputZipPath);
-    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    const originalName = baseName(req.file.originalname);
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${originalName}_${mode}.zip"`);
     return res.send(zipBuffer);
   } catch (error) {
     console.error(`Extract ${mode} error:`, error);
-    const msg = (error.message || '').replace(/python failed with code \d+:\s*/i, '').trim();
-    return res.status(400).json({ error: msg || `Failed to extract ${mode}.` });
+    return res.status(400).json({ error: clientErr(error, `Failed to extract ${mode}.`) });
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -593,14 +560,13 @@ app.post('/api/page-ops', upload.single('file'), async (req, res) => {
     await fs.writeFile(paramsPath, req.body.params || '{}');
     await runPython([pythonScriptPath, mode, inputPdfPath, outputPdfPath, paramsPath]);
     const pdfBuffer = await fs.readFile(outputPdfPath);
-    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    const originalName = baseName(req.file.originalname);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${originalName}_${mode}.pdf"`);
     return res.send(pdfBuffer);
   } catch (error) {
     console.error(`page-ops ${mode} error:`, error);
-    const msg = (error.message || '').replace(/python failed with code \d+:\s*/i, '').trim();
-    return res.status(500).json({ error: msg || `Failed to run ${mode}.` });
+    return res.status(500).json({ error: clientErr(error, `Failed to run ${mode}.`) });
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -630,8 +596,7 @@ app.post('/api/docx-from-text', async (req, res) => {
     return res.send(outBuffer);
   } catch (error) {
     console.error('docx-from-text error:', error);
-    const msg = (error.message || '').replace(/python failed with code \d+:\s*/i, '').trim();
-    return res.status(500).json({ error: msg || 'Failed to build the edited document.' });
+    return res.status(500).json({ error: clientErr(error, 'Failed to build the edited document.') });
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -665,7 +630,7 @@ app.post('/api/protect-pdf', upload.single('file'), async (req, res) => {
     ]);
 
     const protectedBuffer = await fs.readFile(outputPath);
-    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    const originalName = baseName(req.file.originalname);
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${originalName}_protected.pdf"`);
@@ -768,7 +733,7 @@ sys.exit(0)
 `;
 
     await new Promise((resolve, reject) => {
-      const py = spawn('python3', ['-c', pyScript, inputPath, outputPath, mode, password]);
+      const py = spawnBounded('python3', ['-c', pyScript, inputPath, outputPath, mode, password]);
       let stderr = '';
       py.stderr.on('data', (d) => (stderr += d.toString()));
       py.on('close', (code) => {
@@ -784,13 +749,13 @@ sys.exit(0)
     });
 
     const unlockedBuffer = await fs.readFile(outputPath);
-    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    const originalName = baseName(req.file.originalname);
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${originalName}_unlocked.pdf"`);
     return res.send(unlockedBuffer);
   } catch (error) {
-    return res.status(400).json({ error: error.message || 'Failed to unlock PDF.' });
+    return res.status(400).json({ error: clientErr(error, 'Failed to unlock PDF.') });
   } finally {
     await fs.unlink(inputPath).catch(() => {});
     await fs.unlink(outputPath).catch(() => {});
@@ -837,7 +802,7 @@ async function executeGhostscriptCrop(inputBuffer, cropParams, _originalFilename
   ];
 
   return new Promise((resolve, reject) => {
-    const gs = spawn('gs', gsArgs);
+    const gs = spawnBounded('gs', gsArgs);
     let stderr = '';
     gs.stderr.on('data', (d) => (stderr += d.toString()));
 
@@ -874,9 +839,33 @@ app.post('/api/crop-pdf', upload.single('file'), async (req, res) => {
     }
 
     // Parse the crop parameters from the multipart request
-    const cropParams = JSON.parse(req.body.cropParams);
+    let cropParams;
+    try {
+      cropParams = JSON.parse(req.body.cropParams || '{}');
+    } catch {
+      return res.status(400).json({ error: 'Invalid crop parameters.' });
+    }
 
-    // cropParams structure: { pages: 'all'|'current', currentPageNumber: number, x: percent, y: percent, width: percent, height: percent }
+    // cropParams is interpolated into a Ghostscript -c PostScript program
+    // further down — every field MUST be coerced to a bounded number here.
+    // A string like "} } (file.ps) run [" would otherwise execute arbitrary
+    // PostScript on the server (file read, command exec on old gs builds).
+    const num = (v, lo, hi) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null;
+    };
+    const page = Number(cropParams.currentPageNumber);
+    cropParams = {
+      x: num(cropParams.x, 0, 100),
+      y: num(cropParams.y, 0, 100),
+      width: num(cropParams.width, 0.1, 100),
+      height: num(cropParams.height, 0.1, 100),
+      currentPageNumber: Number.isInteger(page) && page >= 1 ? page : 1,
+      pages: cropParams.pages === 'current' ? 'current' : 'all',
+    };
+    if (Object.values(cropParams).includes(null)) {
+      return res.status(400).json({ error: 'Invalid crop parameters.' });
+    }
 
     const inputBuffer = req.file.buffer;
     const croppedBuffer = await executeGhostscriptCrop(
@@ -885,7 +874,7 @@ app.post('/api/crop-pdf', upload.single('file'), async (req, res) => {
       req.file.originalname
     );
 
-    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    const originalName = baseName(req.file.originalname);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="cropped_${originalName}.pdf"`);
     res.setHeader('x-original-size', inputBuffer.length.toString());
@@ -915,7 +904,7 @@ app.post('/api/convert/pdf-to-markdown', upload.single('file'), async (req, res)
     await fs.writeFile(inputPdfPath, req.file.buffer);
 
     await new Promise((resolve, reject) => {
-      const py = spawn('python3', [pythonScriptPath, inputPdfPath, outputMdPath]);
+      const py = spawnBounded('python3', [pythonScriptPath, inputPdfPath, outputMdPath]);
 
       let stderr = '';
       py.stderr.on('data', (data) => {
@@ -934,7 +923,7 @@ app.post('/api/convert/pdf-to-markdown', upload.single('file'), async (req, res)
     });
 
     const mdBuffer = await fs.readFile(outputMdPath);
-    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    const originalName = baseName(req.file.originalname);
 
     res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${originalName}.md"`);
@@ -948,8 +937,12 @@ app.post('/api/convert/pdf-to-markdown', upload.single('file'), async (req, res)
 });
 
 // Edit PDF text — preserves ORIGINAL embedded fonts via PyMuPDF
-app.post('/api/edit-pdf-text', upload.single('file'), async (req, res) => {
-  if (!req.file) {
+app.post('/api/edit-pdf-text', upload.fields([
+  { name: 'file', maxCount: 1 },
+  { name: 'imgs', maxCount: 40 },
+]), async (req, res) => {
+  const pdfFile = req.files?.file?.[0];
+  if (!pdfFile) {
     return res.status(400).json({ error: 'No PDF file uploaded.' });
   }
 
@@ -967,11 +960,32 @@ app.post('/api/edit-pdf-text', upload.single('file'), async (req, res) => {
 
   try {
     await fs.mkdir(tempDir, { recursive: true });
-    await fs.writeFile(inputPdfPath, req.file.buffer);
-    await fs.writeFile(editsPath, editsJson);
+    await fs.writeFile(inputPdfPath, pdfFile.buffer);
+    // replacement image files — map each imgIdx to a real path in the payload
+    const imgFiles = req.files?.imgs || [];
+    let payloadStr = editsJson;
+    if (imgFiles.length) {
+      const payload = JSON.parse(editsJson);
+      const paths = [];
+      for (let i = 0; i < imgFiles.length; i++) {
+        const p = path.join(tempDir, `img_${i}${path.extname(imgFiles[i].originalname || '.png')}`);
+        await fs.writeFile(p, imgFiles[i].buffer);
+        paths.push(p);
+      }
+      for (const pdata of Object.values(payload.pages || {})) {
+        for (const e of pdata.edits || []) {
+          if (e.action === 'imgreplace' && Number.isInteger(e.imgIdx) && paths[e.imgIdx]) {
+            e.imgPath = paths[e.imgIdx];
+          }
+          delete e.imgIdx;
+        }
+      }
+      payloadStr = JSON.stringify(payload);
+    }
+    await fs.writeFile(editsPath, payloadStr);
 
     await new Promise((resolve, reject) => {
-      const py = spawn('python3', [pythonScriptPath, inputPdfPath, outputPdfPath, editsPath]);
+      const py = spawnBounded('python3', [pythonScriptPath, inputPdfPath, outputPdfPath, editsPath]);
 
       let stderr = '';
       py.stderr.on('data', (data) => {
@@ -990,7 +1004,7 @@ app.post('/api/edit-pdf-text', upload.single('file'), async (req, res) => {
     });
 
     const pdfBuffer = await fs.readFile(outputPdfPath);
-    const originalName = req.file.originalname.replace(/\.[^/.]+$/, '');
+    const originalName = pdfFile.originalname.replace(/\.[^/.]+$/, '');
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${originalName}_edited.pdf"`);
@@ -998,6 +1012,92 @@ app.post('/api/edit-pdf-text', upload.single('file'), async (req, res) => {
   } catch (error) {
     console.error('PDF text edit error:', error);
     return res.status(500).json({ error: 'Failed to apply text edits to PDF.' });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+// List embedded images per page (for the editor's Image tool)
+app.post('/api/pdf-images', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No PDF file uploaded.' });
+  }
+  const tempId = `imglist_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const tempDir = path.join(os.tmpdir(), tempId);
+  const inputPdfPath = path.join(tempDir, 'input.pdf');
+  const pythonScriptPath = path.join(__dirname, 'list_pdf_images.py');
+
+  try {
+    await fs.mkdir(tempDir, { recursive: true });
+    await fs.writeFile(inputPdfPath, req.file.buffer);
+
+    const json = await runPython([pythonScriptPath, inputPdfPath]);
+    return res.json(JSON.parse(json || '{}'));
+  } catch (error) {
+    console.error('PDF image list error:', error);
+    return res.status(500).json({ error: 'Failed to list PDF images.' });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+// Replace or remove an embedded image (editor's Image tool)
+app.post('/api/edit-pdf-image', upload.fields([
+  { name: 'file', maxCount: 1 },
+  { name: 'image', maxCount: 1 },
+]), async (req, res) => {
+  const pdfFile = req.files?.file?.[0];
+  if (!pdfFile) {
+    return res.status(400).json({ error: 'No PDF file uploaded.' });
+  }
+  const page = parseInt(req.body.page, 10);
+  const xref = parseInt(req.body.xref, 10);
+  const action = req.body.action; // 'replace' | 'delete' | 'move'
+  const imgFile = req.files?.image?.[0];
+  if (!Number.isFinite(page) || !Number.isFinite(xref) || !['replace', 'delete', 'move'].includes(action)) {
+    return res.status(400).json({ error: 'Invalid image edit request.' });
+  }
+  if (action === 'replace' && !imgFile) {
+    return res.status(400).json({ error: 'No replacement image uploaded.' });
+  }
+
+  const tempId = `imgedit_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const tempDir = path.join(os.tmpdir(), tempId);
+  const inputPdfPath = path.join(tempDir, 'input.pdf');
+  const outputPdfPath = path.join(tempDir, 'output.pdf');
+  const imgPath = imgFile ? path.join(tempDir, `new${path.extname(imgFile.originalname || '.png')}`) : null;
+  const pythonScriptPath = path.join(__dirname, 'edit_pdf_image.py');
+
+  try {
+    await fs.mkdir(tempDir, { recursive: true });
+    await fs.writeFile(inputPdfPath, pdfFile.buffer);
+    if (imgFile) await fs.writeFile(imgPath, imgFile.buffer);
+
+    // rect/newRect are forwarded as argv — accept only [x0,y0,x1,y1] of
+    // finite numbers so a malformed body can't reach fitz.Rect unvalidated.
+    const rectOk = (v) => {
+      try {
+        const r = JSON.parse(v);
+        return Array.isArray(r) && r.length === 4 && r.every((n) => Number.isFinite(n));
+      } catch { return false; }
+    };
+    if ((req.body.rect && !rectOk(req.body.rect)) || (req.body.newRect && !rectOk(req.body.newRect))) {
+      return res.status(400).json({ error: 'Invalid rect.' });
+    }
+
+    const args = [pythonScriptPath, inputPdfPath, outputPdfPath, String(page), String(xref), action];
+    if (action === 'replace') args.push(imgPath); else args.push('-');
+    if (req.body.rect) args.push(req.body.rect);
+    if (req.body.newRect) args.push(req.body.newRect);
+
+    await runPython(args);
+
+    const pdfBuffer = await fs.readFile(outputPdfPath);
+    res.setHeader('Content-Type', 'application/pdf');
+    return res.send(pdfBuffer);
+  } catch (error) {
+    console.error('PDF image edit error:', error);
+    return res.status(500).json({ error: 'Failed to edit PDF image.' });
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -1041,15 +1141,36 @@ app.get('/api/templates', (req, res) => {
   res.json({ categories: data.categories, templates });
 });
 
+// Serialize read-modify-write cycles per JSON file — parallel requests
+// otherwise lose updates when a stale snapshot's writeFile lands last.
+const jsonFileQueues = new Map();
+function queueJsonWrite(path, work) {
+  const prev = jsonFileQueues.get(path) || Promise.resolve();
+  const next = prev.catch(() => {}).then(work);
+  jsonFileQueues.set(path, next);
+  return next;
+}
+
 // Lightweight usage analytics: view | preview | use | download
 app.post('/api/templates/:id/track', (req, res) => {
   const { type } = req.body || {};
+  const id = req.params.id;
+  // req.params.id is attacker-controlled. Writing templateUsage[id] with a
+  // magic key like '__proto__' pollutes Object.prototype for the whole
+  // process — only known template ids may be tracked, and magic keys are
+  // refused outright as defense-in-depth.
+  const isKnown = getTemplatesData().templates.some((t) => t.id === id);
+  if (!isKnown || ['__proto__', 'prototype', 'constructor'].includes(id)) {
+    return res.status(400).json({ error: 'invalid id' });
+  }
   if (!['view', 'preview', 'use', 'download'].includes(type)) {
     return res.status(400).json({ error: 'invalid type' });
   }
-  const u = (templateUsage[req.params.id] = templateUsage[req.params.id] || {});
+  const u = (templateUsage[id] = templateUsage[id] || {});
   u[type] = (u[type] || 0) + 1;
-  fs.writeFile(TPL_USAGE_PATH, JSON.stringify(templateUsage)).catch(() => {});
+  queueJsonWrite(TPL_USAGE_PATH, () =>
+    fs.writeFile(TPL_USAGE_PATH, JSON.stringify(templateUsage))
+  ).catch(() => {});
   res.json({ ok: true });
 });
 
@@ -1068,16 +1189,26 @@ app.post('/api/ai', async (req, res) => {
     return res.status(400).json({ error: 'Invalid prompt.' });
   }
   try {
-    const r = await fetch(`${base}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 1200,
-        temperature: 0.5,
-      }),
-    });
+    // Bound the upstream call — a hung provider must not hold this request
+    // (and its connection slot) open forever.
+    const ctrl = new AbortController();
+    const upstreamTimer = setTimeout(() => ctrl.abort(), 60 * 1000);
+    let r;
+    try {
+      r = await fetch(`${base}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 1200,
+          temperature: 0.5,
+        }),
+      });
+    } finally {
+      clearTimeout(upstreamTimer);
+    }
     const data = await r.json().catch(() => ({}));
     if (!r.ok) return res.status(r.status).json({ error: data.error?.message || 'AI provider error.' });
     res.json({ result: data.choices?.[0]?.message?.content || '' });
@@ -1087,7 +1218,7 @@ app.post('/api/ai', async (req, res) => {
 });
 
 // AI Assistant project inquiries — validated, stored to JSON (CRM-ready).
-const INQUIRIES_PATH = path.join(os.tmpdir(), 'pdf-forge-inquiries.json');
+const INQUIRIES_PATH = path.join(__dirname, 'data', 'inquiries.json');
 app.post('/api/inquiries', async (req, res) => {
   const { serviceId, service, answers } = req.body || {};
   if (!serviceId || !Array.isArray(answers) || !answers.length) {
@@ -1100,18 +1231,44 @@ app.post('/api/inquiries', async (req, res) => {
     createdAt: new Date().toISOString(),
   };
   try {
-    let list = [];
-    try { list = JSON.parse(await fs.readFile(INQUIRIES_PATH, 'utf8')); } catch { /* first inquiry */ }
-    list.push(clean);
-    await fs.writeFile(INQUIRIES_PATH, JSON.stringify(list, null, 2));
+    await queueJsonWrite(INQUIRIES_PATH, async () => {
+      let list = [];
+      try { list = JSON.parse(await fs.readFile(INQUIRIES_PATH, 'utf8')); } catch { /* first inquiry */ }
+      list.push(clean);
+      await fs.writeFile(INQUIRIES_PATH, JSON.stringify(list, null, 2));
+    });
     res.json({ ok: true });
   } catch {
     res.status(500).json({ error: 'Could not store inquiry.' });
   }
 });
-app.get('/api/inquiries', async (_req, res) => {
+// Inquiry list contains customer data — never expose it without the admin key.
+// Set ADMIN_KEY in env; without it the endpoint stays disabled entirely.
+// Send it in the x-admin-key header (the ?key= query form still works, but
+// headers don't leak into proxy/access logs).
+app.get('/api/inquiries', async (req, res) => {
+  const key = process.env.ADMIN_KEY;
+  const supplied = req.get('x-admin-key') || req.query.key;
+  if (!key || supplied !== key) {
+    return res.status(403).json({ error: 'Forbidden.' });
+  }
   try { res.json(JSON.parse(await fs.readFile(INQUIRIES_PATH, 'utf8'))); }
   catch { res.json([]); }
+});
+
+// Turn multer errors (oversized file, too many files, etc.) into clean JSON
+// instead of Express's default HTML error page.
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE' || err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_PART_COUNT') {
+      return res.status(413).json({ error: 'Upload exceeds the 100 MB / file-count limit.' });
+    }
+    return res.status(400).json({ error: `Upload rejected (${err.code}).` });
+  }
+  if (err?.type === 'entity.parse.failed' || (err instanceof SyntaxError && 'body' in err)) {
+    return res.status(400).json({ error: 'Malformed JSON body.' });
+  }
+  next(err);
 });
 
 const PORT = process.env.PORT || 5000;

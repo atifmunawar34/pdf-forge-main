@@ -1,15 +1,19 @@
+import ToolGlyph from './ToolGlyph';
+import { useT } from '../i18n/index.jsx';
+import { toolName, toolDesc } from '../i18n/tools.jsx';
+
 export default function ToolCard({ tool, onSelect }) {
-  const IconComponent = tool.icon;
+  useT(); // re-render on language change
   const isInactive = tool.inactive;
 
   return (
     <button
       onClick={() => !isInactive && onSelect(tool)}
       disabled={isInactive}
-      className={`pf-card pf-press group relative w-full h-full text-left bg-white p-4 rounded-2xl border ${
+      className={`pf-press group relative w-full h-full min-h-[190px] text-left bg-white p-7 rounded-2xl border border-slate-200 transition-shadow duration-150 ${
         isInactive
-          ? 'opacity-65 cursor-not-allowed border-slate-200 bg-slate-50/50'
-          : 'border-slate-200/80 hover:border-slate-300 shadow-sm hover:shadow-md cursor-pointer'
+          ? 'opacity-60 cursor-not-allowed'
+          : 'hover:shadow-lg hover:border-slate-300 cursor-pointer'
       }`}
     >
       {/* Dynamic Badge */}
@@ -27,22 +31,18 @@ export default function ToolCard({ tool, onSelect }) {
         </span>
       )}
 
-      <div
-        className={`w-10 h-10 rounded-xl ${tool.bg} ${tool.color} flex items-center justify-center transition-transform ${
-          !isInactive ? 'group-hover:scale-105' : ''
-        }`}
-      >
-        <IconComponent className="w-5 h-5" />
-      </div>
+      <span className={`transition-transform ${!isInactive ? 'group-hover:scale-110' : ''}`}>
+        <ToolGlyph icon={tool.icon} colorClass={tool.color} size={46} />
+      </span>
       <h3
-        className={`mt-3 font-bold text-sm text-slate-900 leading-snug ${
-          !isInactive ? 'group-hover:text-rose-600' : 'text-slate-500'
+        className={`mt-4 font-bold text-base leading-snug ${
+          !isInactive ? 'text-slate-900 group-hover:text-rose-600' : 'text-slate-500'
         } transition-colors`}
       >
-        {tool.name}
+        {toolName(tool)}
       </h3>
-      <p className="mt-1 text-xs text-slate-500 leading-snug line-clamp-3">
-        {tool.desc}
+      <p className="mt-2 text-sm text-slate-500 leading-snug line-clamp-3">
+        {toolDesc(tool)}
       </p>
     </button>
   );

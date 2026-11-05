@@ -9,8 +9,26 @@ Modes:
     attachments -> embedded file attachments (docx, xlsx, xml, etc.)
 """
 import sys
+import re
 import zipfile
 import fitz
+
+
+def _safe_zip_name(name, used):
+    """Embedded attachment names are attacker-controlled. Reduce them to a
+    bare basename so the ZIP we serve can't contain '../' or absolute paths
+    (zip-slip) for whoever extracts it."""
+    base = name.replace("\\", "/").rstrip("/").split("/")[-1].strip()
+    base = re.sub(r"[^\w.\- ]", "_", base).lstrip(".")
+    if not base:
+        base = "attachment"
+    # Deduplicate after sanitization ("a/../x" and "x" collide as "x").
+    stem, dot, ext = base.rpartition(".")
+    n = used.get(base, 0)
+    used[base] = n + 1
+    if n:
+        base = f"{stem or base}_{n + 1}{dot}{ext}" if dot else f"{base}_{n + 1}"
+    return base
 
 
 def main():
@@ -42,13 +60,14 @@ def main():
                             z.writestr(f"page{pno + 1}_img{xref}.{ext}", data)
                             count += 1
             elif mode == "attachments":
+                used = {}
                 for name in doc.embfile_names():
                     try:
                         data = doc.embfile_get(name)
                     except Exception:
                         continue
                     if data:
-                        z.writestr(name, data)
+                        z.writestr(_safe_zip_name(name, used), data)
                         count += 1
             else:
                 print(f"Unknown mode: {mode}", file=sys.stderr)

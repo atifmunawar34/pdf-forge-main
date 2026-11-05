@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Search, SlidersHorizontal, Flame, FileText, X, LayoutTemplate, Layers, Download } from 'lucide-react';
+import { Search, Flame, FileText, X } from 'lucide-react';
 import { fetchTemplates, usageScore } from '../utils/templatesApi';
 import TemplateCard from './TemplateCard';
 
@@ -52,7 +52,6 @@ export default function TemplatesHub({ categorySlug, onPreview, onUse }) {
   const [docType, setDocType] = useState('all');
   const [sort, setSort] = useState('popular');
   const [page, setPage] = useState(1);
-  const [showFilters, setShowFilters] = useState(false);
 
   useEffect(() => {
     fetchTemplates().then(setData).catch((e) => setError(e.message));
@@ -61,7 +60,7 @@ export default function TemplatesHub({ categorySlug, onPreview, onUse }) {
   // SEO: page title + description for the hub
   useEffect(() => {
     const prev = document.title;
-    document.title = 'Free Document Templates — Resumes, Invoices, Letters & Contracts | PDF Forge';
+    document.title = 'Free Document Templates — Resumes, Invoices, Letters & Contracts | ilovetopdf';
     return () => { document.title = prev; };
   }, []);
 
@@ -103,31 +102,17 @@ export default function TemplatesHub({ categorySlug, onPreview, onUse }) {
   const searching = query.trim() || cat !== 'all' || docType !== 'all';
 
   return (
-    <div className="min-h-screen bg-slate-50 pb-16">
-      {/* hero */}
-      <section className="bg-gradient-to-b from-rose-50 to-slate-50 border-b border-slate-200 px-4 pt-12 pb-8 text-center">
-        <h1 className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight">
-          Free Document Templates — <span className="text-rose-500">Resumes, Invoices, Letters & Contracts</span>
+    <div className="min-h-screen bg-[#f6f4f9] pb-16">
+      {/* hero — compact, search-first like Canva */}
+      <section className="bg-gradient-to-b from-rose-50 to-[#f6f4f9] border-b border-slate-200 px-4 pt-10 pb-7 text-center">
+        <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
+          Free Templates — <span className="text-rose-500">fill online & download as PDF</span>
         </h1>
-        <p className="mt-2 text-sm text-slate-500 max-w-xl mx-auto">
-          Professional templates, each with its own design: resumes, invoices, cover letters, agreements, receipts, planners and business forms — fill online, preview, download as PDF free.
-        </p>
-        <div className="mt-4 flex flex-wrap justify-center gap-2">
-          {[
-            [LayoutTemplate, `${data?.templates?.length || '175'}+ templates`],
-            [Layers, `${data?.categories?.length || 19} categories`],
-            [Download, 'Free PDF download'],
-          ].map(([Icon, label]) => (
-            <span key={label} className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-500 bg-white border border-slate-200 px-3 py-1.5 rounded-full shadow-sm">
-              <Icon className="w-3.5 h-3.5 text-rose-500" /> {label}
-            </span>
-          ))}
-        </div>
-        <div className="mt-6 max-w-xl mx-auto relative">
+        <div className="mt-5 max-w-xl mx-auto relative">
           <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
-            placeholder="Search templates… (invoice, resume, agreement, planner)"
+            placeholder="Search templates… (resume, invoice, invitation, menu)"
             value={query}
             onChange={(e) => { setQuery(e.target.value); setPage(1); }}
             className="w-full pl-12 pr-10 py-3.5 bg-white rounded-2xl border border-slate-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition text-sm"
@@ -140,129 +125,135 @@ export default function TemplatesHub({ categorySlug, onPreview, onUse }) {
         </div>
       </section>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        {/* filters */}
-        <div className="mt-6 flex items-center justify-between gap-3">
-          <button
-            onClick={() => setShowFilters(!showFilters)}
-            className="flex items-center gap-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 px-4 py-2.5 rounded-xl hover:border-rose-300 transition cursor-pointer"
-          >
-            <SlidersHorizontal className="w-4 h-4" /> Filters
-          </button>
-          <p className="text-xs text-slate-400 font-semibold">{filtered.length} templates</p>
-        </div>
-
-        {showFilters && (
-          <div className="mt-3 bg-white border border-slate-200 rounded-2xl p-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <Sel label="Category" value={cat} onChange={pick(setCat)}
-              options={[['all', 'All categories'], ...(data?.categories || []).map((c) => [c.slug, c.name])]} />
-            <Sel label="Document Type" value={docType} onChange={pick(setDocType)}
-              options={[['all', 'All types'], ...DOC_TYPES]} />
-            <Sel label="Sort By" value={sort} onChange={pick(setSort)} options={SORTS} />
-            <div className="flex items-end">
-              <button
-                onClick={() => { setCat('all'); setDocType('all'); setSort('popular'); setQuery(''); setPage(1); }}
-                className="w-full text-xs font-bold text-slate-500 hover:text-rose-600 border border-slate-200 rounded-xl px-3 py-2.5 transition cursor-pointer"
-              >
-                Reset
-              </button>
-            </div>
-          </div>
-        )}
-
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6">
         {error && (
-          <div className="mt-6 p-4 bg-rose-50 border border-rose-200 rounded-2xl text-sm text-rose-700">
+          <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-sm text-rose-700">
             Could not load templates: {error}. Make sure the backend server is running.
           </div>
         )}
-
         {!data && !error && <SkeletonGrid />}
 
-        {/* popular row — only when not searching */}
-        {data && !searching && (
-          <section className="mt-8">
-            <div className="flex items-center gap-2 mb-3">
-              <Flame className="w-4 h-4 text-amber-500" />
-              <h2 className="text-sm font-black text-slate-800">Popular Templates</h2>
-            </div>
-            <div className={GRID}>
-              {popular.map((t) => (
-                <TemplateCard key={t.id} tpl={t} onPreview={() => onPreview(t)} onUse={() => onUse(t)} />
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* category chips — sticky, with counts */}
-        {data && !searching && (
-          <div className="sticky top-16 z-20 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 py-2.5 mt-6 bg-slate-50/90 backdrop-blur-md">
-            <div className="flex gap-1.5 overflow-x-auto pf-scroll-x">
-              <button
-                onClick={() => pick(setCat)('all')}
-                className={`shrink-0 px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap cursor-pointer transition ${
-                  cat === 'all' ? 'bg-slate-900 text-white shadow-sm' : 'bg-white border border-slate-200 text-slate-600 hover:border-slate-300 hover:text-slate-900'
-                }`}
-              >
-                All <span className={cat === 'all' ? 'text-slate-400' : 'text-slate-300'}>{data.templates.length}</span>
-              </button>
-              {data.categories.map((c) => (
+        {data && (
+          <div className="flex gap-6 items-start">
+            {/* ---------- Canva-style left sidebar ---------- */}
+            <aside className="hidden md:block w-52 shrink-0 sticky top-20">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-3 mb-2">Templates</p>
+              <nav className="space-y-0.5">
                 <button
-                  key={c.slug}
-                  onClick={() => pick(setCat)(c.slug)}
-                  className={`shrink-0 px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap cursor-pointer transition ${
-                    cat === c.slug ? 'bg-slate-900 text-white shadow-sm' : 'bg-white border border-slate-200 text-slate-600 hover:border-slate-300 hover:text-slate-900'
+                  onClick={() => pick(setCat)('all')}
+                  className={`w-full text-left flex items-center justify-between px-3 py-2 rounded-lg text-[13px] font-semibold cursor-pointer transition ${
+                    cat === 'all' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-white hover:text-slate-900'
                   }`}
                 >
-                  {c.name} <span className={cat === c.slug ? 'text-slate-400' : 'text-slate-300'}>{counts[c.slug] || 0}</span>
+                  All templates
+                  <span className={`text-[10px] ${cat === 'all' ? 'text-slate-400' : 'text-slate-300'}`}>{data.templates.length}</span>
                 </button>
-              ))}
-            </div>
-          </div>
-        )}
+                {data.categories.map((c) => (
+                  <button
+                    key={c.slug}
+                    onClick={() => pick(setCat)(c.slug)}
+                    className={`w-full text-left flex items-center justify-between px-3 py-2 rounded-lg text-[13px] font-semibold cursor-pointer transition ${
+                      cat === c.slug ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-white hover:text-slate-900'
+                    }`}
+                  >
+                    {c.name}
+                    <span className={`text-[10px] ${cat === c.slug ? 'text-slate-400' : 'text-slate-300'}`}>{counts[c.slug] || 0}</span>
+                  </button>
+                ))}
+              </nav>
 
-        {/* main grid */}
-        {data && (
-          <section className="mt-6">
-            <div className="flex items-center gap-2 mb-3">
-              <FileText className="w-4 h-4 text-slate-400" />
-              <h2 className="text-sm font-black text-slate-800">
-                {searching ? `Results` : 'All Templates'}
-              </h2>
-            </div>
-            {shown.length === 0 ? (
-              <div className="py-16 text-center text-slate-400">
-                <Search className="w-10 h-10 mx-auto mb-3 opacity-40" />
-                <p className="text-sm font-bold text-slate-500">No templates found</p>
-                <p className="text-xs mt-1">Try a different search or clear the filters.</p>
+              <div className="mt-5 pt-4 border-t border-slate-200 space-y-3">
+                <Sel label="Document type" value={docType} onChange={pick(setDocType)}
+                  options={[['all', 'All types'], ...DOC_TYPES]} />
+                <Sel label="Sort by" value={sort} onChange={pick(setSort)} options={SORTS} />
               </div>
-            ) : (
-              <div className={GRID}>
-                {shown.map((t) => (
-                  <TemplateCard key={t.id} tpl={t} onPreview={() => onPreview(t)} onUse={() => onUse(t)} />
+            </aside>
+
+            {/* mobile category chips */}
+            <div className="md:hidden w-full">
+              <div className="flex gap-1.5 overflow-x-auto pf-scroll-x pb-1">
+                <button
+                  onClick={() => pick(setCat)('all')}
+                  className={`shrink-0 px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap cursor-pointer transition ${
+                    cat === 'all' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600'
+                  }`}
+                >All</button>
+                {data.categories.map((c) => (
+                  <button
+                    key={c.slug}
+                    onClick={() => pick(setCat)(c.slug)}
+                    className={`shrink-0 px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap cursor-pointer transition ${
+                      cat === c.slug ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600'
+                    }`}
+                  >{c.name}</button>
                 ))}
               </div>
-            )}
+            </div>
 
-            {pages > 1 && (
-              <div className="mt-8 flex items-center justify-center gap-2">
-                <button
-                  disabled={page === 1}
-                  onClick={() => setPage(page - 1)}
-                  className="px-4 py-2 text-xs font-bold rounded-xl bg-white border border-slate-200 disabled:opacity-40 hover:border-rose-300 transition cursor-pointer"
-                >
-                  ← Prev
-                </button>
-                <span className="text-xs font-bold text-slate-500">{page} / {pages}</span>
-                <button
-                  disabled={page === pages}
-                  onClick={() => setPage(page + 1)}
-                  className="px-4 py-2 text-xs font-bold rounded-xl bg-white border border-slate-200 disabled:opacity-40 hover:border-rose-300 transition cursor-pointer"
-                >
-                  Next →
-                </button>
-              </div>
-            )}
-          </section>
+            {/* ---------- main content ---------- */}
+            <div className="flex-1 min-w-0">
+              {!searching && (
+                <section>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Flame className="w-4 h-4 text-amber-500" />
+                    <h2 className="text-sm font-black text-slate-800">Popular templates</h2>
+                  </div>
+                  <div className={GRID}>
+                    {popular.map((t) => (
+                      <TemplateCard key={t.id} tpl={t} onPreview={() => onPreview(t)} onUse={() => onUse(t)} />
+                    ))}
+                  </div>
+                  <div className="mt-6 mb-3 flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-slate-400" />
+                    <h2 className="text-sm font-black text-slate-800">All templates</h2>
+                  </div>
+                </section>
+              )}
+
+              {searching && (
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-sm font-black text-slate-800">
+                    {data.categories.find((c) => c.slug === cat)?.name || 'Results'}
+                  </h2>
+                  <p className="text-xs text-slate-400 font-semibold">{filtered.length} templates</p>
+                </div>
+              )}
+
+              {shown.length === 0 ? (
+                <div className="py-16 text-center text-slate-400">
+                  <Search className="w-10 h-10 mx-auto mb-3 opacity-40" />
+                  <p className="text-sm font-bold text-slate-500">No templates found</p>
+                  <p className="text-xs mt-1">Try a different search or clear the filters.</p>
+                </div>
+              ) : (
+                <div className={GRID}>
+                  {shown.map((t) => (
+                    <TemplateCard key={t.id} tpl={t} onPreview={() => onPreview(t)} onUse={() => onUse(t)} />
+                  ))}
+                </div>
+              )}
+
+              {pages > 1 && (
+                <div className="mt-8 flex items-center justify-center gap-2">
+                  <button
+                    disabled={page === 1}
+                    onClick={() => setPage(page - 1)}
+                    className="px-4 py-2 text-xs font-bold rounded-xl bg-white border border-slate-200 disabled:opacity-40 hover:border-rose-300 transition cursor-pointer"
+                  >
+                    ← Prev
+                  </button>
+                  <span className="text-xs font-bold text-slate-500">{page} / {pages}</span>
+                  <button
+                    disabled={page === pages}
+                    onClick={() => setPage(page + 1)}
+                    className="px-4 py-2 text-xs font-bold rounded-xl bg-white border border-slate-200 disabled:opacity-40 hover:border-rose-300 transition cursor-pointer"
+                  >
+                    Next →
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
     </div>

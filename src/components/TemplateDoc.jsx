@@ -8,6 +8,59 @@ const ACCENT_HEX = {
   emerald: '#047857', slate: '#2d3a4d', charcoal: '#20242b', blue: '#2456b8',
   violet: '#7c3aed', indigo: '#4338ca', crimson: '#be123c', orange: '#ea580c',
   sky: '#0284c7', plum: '#86198f', olive: '#4d7c0f',
+  coral: '#f56c6b', mint: '#0fb88d', peach: '#ee9552', lilac: '#9f73e6',
+  burgundy: '#8c1538', mustard: '#d19a15', copper: '#b86640', forest: '#1a6640',
+  turquoise: '#0f9eb8', mauve: '#9e6b8c',
+};
+
+// Vecteezy-style decorative accents — absolute shapes in the page margin.
+const Decor = ({ d, acc }) => {
+  if (!d) return null;
+  const st = { position: 'absolute', pointerEvents: 'none' };
+  switch (d) {
+    case 'tri': return (<>
+      <span style={{ ...st, top: 0, right: 0, width: 0, height: 0, borderTop: `34px solid ${acc}`, borderLeft: '34px solid transparent' }} />
+      <span style={{ ...st, top: 0, right: 0, width: 0, height: 0, borderTop: '20px solid #1e293b', borderLeft: '20px solid transparent' }} />
+      <span style={{ ...st, bottom: 0, left: 0, width: 0, height: 0, borderBottom: `30px solid ${acc}bb`, borderRight: '30px solid transparent' }} />
+    </>);
+    case 'dots': return (<>
+      <span style={{ ...st, top: 10, right: 14, display: 'flex', gap: 6 }}>
+        {[0, 1, 2, 3, 4].map((i) => <i key={i} style={{ width: 5, height: 5, borderRadius: '50%', background: i % 2 ? '#1e293b' : acc }} />)}
+      </span>
+      <span style={{ ...st, bottom: 12, left: 14, width: 8, height: 8, borderRadius: '50%', background: acc }} />
+    </>);
+    case 'diag': return (<>
+      <span style={{ ...st, top: -6, right: -30, width: 140, height: 22, background: acc, transform: 'skewX(-30deg)' }} />
+      <span style={{ ...st, top: 14, right: -40, width: 110, height: 8, background: acc, opacity: 0.45, transform: 'skewX(-30deg)' }} />
+    </>);
+    case 'geo': return (<>
+      <span style={{ ...st, top: 8, left: 10, width: 14, height: 14, borderRadius: '50%', background: acc }} />
+      <span style={{ ...st, top: 16, left: 26, width: 12, height: 12, background: '#1e293b', borderRadius: 2 }} />
+      <span style={{ ...st, top: 4, left: 44, width: 5, height: 5, borderRadius: '50%', background: acc, opacity: 0.6 }} />
+    </>);
+    case 'zig': return (
+      <span style={{ ...st, bottom: 0, left: 0, right: 0, height: 8, background: `repeating-linear-gradient(135deg, ${acc} 0 7px, transparent 7px 14px)` }} />
+    );
+    case 'frame': {
+      const L = { position: 'absolute', width: 18, height: 18, borderColor: acc, borderStyle: 'solid', borderWidth: 0 };
+      return (<>
+        <span style={{ ...st, ...L, top: 8, left: 8, borderTopWidth: 2, borderLeftWidth: 2 }} />
+        <span style={{ ...st, ...L, top: 8, right: 8, borderTopWidth: 2, borderRightWidth: 2 }} />
+        <span style={{ ...st, ...L, bottom: 8, left: 8, borderBottomWidth: 2, borderLeftWidth: 2 }} />
+        <span style={{ ...st, ...L, bottom: 8, right: 8, borderBottomWidth: 2, borderRightWidth: 2 }} />
+      </>);
+    }
+    case 'wave': return (
+      <svg style={{ ...st, bottom: 0, left: 0, width: '100%', height: 14 }} viewBox="0 0 600 14" preserveAspectRatio="none">
+        <path d="M0 8 C 75 2, 150 14, 225 8 C 300 2, 375 14, 450 8 C 525 2, 570 11, 600 7 L600 14 L0 14 Z" fill={acc} fillOpacity="0.85" />
+      </svg>
+    );
+    case 'bar': return (<>
+      <span style={{ ...st, top: 0, bottom: 0, left: 0, width: 7, background: acc }} />
+      <span style={{ ...st, top: 0, bottom: 0, left: 7, width: 2, background: acc, opacity: 0.4 }} />
+    </>);
+    default: return null;
+  }
 };
 const accentHex = (tpl) => ACCENT_HEX[tpl.accent] || ACCENT_HEX.rose;
 
@@ -259,12 +312,16 @@ const SectionTitle = ({ children, accent = ACCENT_HEX.rose, theme = 'modern' }) 
 const ACCENT_BG = {
   slate: 'bg-slate-800', navy: 'bg-[#1a2b54]', teal: 'bg-teal-700',
   gold: 'bg-[#a8843a]', emerald: 'bg-emerald-700', charcoal: 'bg-[#20242b]', rose: 'bg-rose-600',
-  blue: 'bg-[#2456b8]',
+  blue: 'bg-[#2456b8]', coral: 'bg-[#f56c6b]', mint: 'bg-[#0fb88d]', peach: 'bg-[#ee9552]',
+  lilac: 'bg-[#9f73e6]', burgundy: 'bg-[#8c1538]', mustard: 'bg-[#d19a15]', copper: 'bg-[#b86640]',
+  forest: 'bg-[#1a6640]', turquoise: 'bg-[#0f9eb8]', mauve: 'bg-[#9e6b8c]',
 };
 const ACCENT_TX = {
   slate: 'text-slate-700', navy: 'text-[#1a2b54]', teal: 'text-teal-700',
   gold: 'text-[#a8843a]', emerald: 'text-emerald-700', charcoal: 'text-[#20242b]', rose: 'text-rose-600',
-  blue: 'text-[#2456b8]',
+  blue: 'text-[#2456b8]', coral: 'text-[#e04e4d]', mint: 'text-[#0a906e]', peach: 'text-[#d97f38]',
+  lilac: 'text-[#8b5cd9]', burgundy: 'text-[#8c1538]', mustard: 'text-[#a87b0f]', copper: 'text-[#b86640]',
+  forest: 'text-[#1a6640]', turquoise: 'text-[#0c8299]', mauve: 'text-[#8a5578]',
 };
 const listItems = (str) => String(str || '').split(/[,\n;•]+/).map((s) => s.trim()).filter(Boolean);
 
@@ -590,9 +647,10 @@ export default function TemplateDoc({ tpl, values }) {
   const inkFirst = serif || th === 'edge';
   return (
     <div
-      className={`bg-white shadow-lg border border-slate-200 rounded-sm w-full min-h-[500px] p-7 text-left select-none ${serif ? 'font-serif' : ''}`}
+      className={`relative overflow-hidden bg-white shadow-lg border border-slate-200 rounded-sm w-full min-h-[500px] p-7 text-left select-none ${serif ? 'font-serif' : ''}`}
       style={th === 'stripe' ? { boxShadow: `inset ${tpl.variant === 'panel' ? '-10px' : '10px'} 0 0 0 ${acc}` } : undefined}
     >
+      <Decor d={tpl.decor} acc={acc} />
       {/* header per docType */}
       {(dt === 'letter') && (
         <div className="mb-4">

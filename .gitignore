@@ -34,3 +34,8 @@ backend/uploads/
 *.njsproj
 *.sln
 *.sw?
+
+# Environment files — never commit real env config/secrets
+.env
+.env.*
+!.env.example

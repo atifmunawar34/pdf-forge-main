@@ -44,6 +44,16 @@ export const ACCENTS = {
   sky: rgb(0.01, 0.52, 0.78),
   plum: rgb(0.53, 0.1, 0.56),
   olive: rgb(0.3, 0.42, 0.1),
+  coral: rgb(0.96, 0.45, 0.42),
+  mint: rgb(0.06, 0.72, 0.55),
+  peach: rgb(0.93, 0.58, 0.32),
+  lilac: rgb(0.62, 0.45, 0.9),
+  burgundy: rgb(0.55, 0.08, 0.22),
+  mustard: rgb(0.82, 0.6, 0.08),
+  copper: rgb(0.72, 0.4, 0.25),
+  forest: rgb(0.1, 0.4, 0.25),
+  turquoise: rgb(0.06, 0.62, 0.72),
+  mauve: rgb(0.62, 0.42, 0.55),
 };
 
 export class W {
@@ -64,7 +74,72 @@ export class W {
   newPage() {
     this.page = this.pdfDoc.addPage([PAGE_W, PAGE_H]);
     this.y = PAGE_H - MARGIN;
+    this.drawDecor();
     if (this.onPage) this.onPage(this.page);
+  }
+
+  // Vecteezy-style decorative accents — drawn in the margin band (top ~30px,
+  // edges, bottom ~24px) so body content never collides.
+  drawDecor() {
+    const d = this.decor;
+    if (!d) return;
+    const p = this.page, a = this.accent;
+    const tri = (pts, color, opacity = 1) => p.drawPolygon(pts, { color, opacity });
+    switch (d) {
+      case 'tri': { // corner triangles, top-right
+        tri([{ x: 545, y: 842 }, { x: 595, y: 842 }, { x: 595, y: 792 }], a, 0.9);
+        tri([{ x: 565, y: 842 }, { x: 595, y: 842 }, { x: 595, y: 812 }], this.ink, 0.85);
+        tri([{ x: 0, y: 18 }, { x: 50, y: 18 }, { x: 0, y: 68 }], a, 0.7);
+        break;
+      }
+      case 'dots': { // dot row, top-right + bottom-left accent dot
+        for (let i = 0; i < 5; i++)
+          p.drawCircle({ x: 505 + i * 18, y: 826, size: 4, color: i % 2 ? this.ink : a });
+        p.drawCircle({ x: 32, y: 26, size: 6, color: a });
+        break;
+      }
+      case 'diag': { // diagonal band across the top-right corner
+        p.drawPolygon([{ x: 480, y: 842 }, { x: 595, y: 842 }, { x: 595, y: 812 }, { x: 510, y: 812 }], { color: a, opacity: 0.9 });
+        p.drawPolygon([{ x: 530, y: 802 }, { x: 595, y: 802 }, { x: 595, y: 792 }, { x: 545, y: 792 }], { color: a, opacity: 0.45 });
+        break;
+      }
+      case 'geo': { // circle + square cluster, top-left
+        p.drawCircle({ x: 28, y: 816, size: 12, color: a, opacity: 0.9 });
+        p.drawRectangle({ x: 44, y: 806, width: 16, height: 16, color: this.ink, opacity: 0.85 });
+        p.drawCircle({ x: 66, y: 828, size: 5, color: a, opacity: 0.6 });
+        break;
+      }
+      case 'zig': { // zigzag strip along the bottom edge
+        const pts = [];
+        for (let x = 0; x <= 595; x += 14) pts.push({ x, y: x % 28 ? 20 : 12 });
+        p.drawLine({ start: pts[0], end: pts[pts.length - 1], thickness: 0 });
+        for (let i = 1; i < pts.length; i++)
+          p.drawLine({ start: pts[i - 1], end: pts[i], thickness: 2.4, color: a });
+        break;
+      }
+      case 'frame': { // L-brackets on all four corners
+        const L = 26, T = 1.8, m = 16;
+        const corners = [
+          [m, 842 - m, 1, -1], [595 - m, 842 - m, -1, -1],
+          [m, m, 1, 1], [595 - m, m, -1, 1],
+        ];
+        for (const [cx, cy, sx, sy] of corners) {
+          p.drawLine({ start: { x: cx, y: cy }, end: { x: cx + L * sx, y: cy }, thickness: T, color: a });
+          p.drawLine({ start: { x: cx, y: cy }, end: { x: cx, y: cy + L * sy }, thickness: T, color: a });
+        }
+        break;
+      }
+      case 'wave': { // wave band along the bottom
+        p.drawSvgPath('M0 16 C 75 4, 150 28, 225 16 C 300 4, 375 28, 450 16 C 525 4, 570 22, 595 14 L595 0 L0 0 Z', { color: a, opacity: 0.85 });
+        break;
+      }
+      case 'bar': { // full-height accent bar on the left edge
+        p.drawRectangle({ x: 0, y: 0, width: 9, height: PAGE_H, color: a, opacity: 0.9 });
+        p.drawRectangle({ x: 9, y: 0, width: 2.5, height: PAGE_H, color: a, opacity: 0.4 });
+        break;
+      }
+      default: break;
+    }
   }
 
   get w() { return this.col ? this.col.w : PAGE_W - MARGIN * 2; }

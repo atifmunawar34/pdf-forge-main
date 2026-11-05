@@ -26,7 +26,7 @@ export const MARKETING_TOOLS = [
   }, { featured: true, popular: true }),
   txt('meta-title-generator', 'Meta Title Generator', 'SEO title tag ideas under 60 characters — multiple variations.', [
     { key: 'kw', label: 'Main keyword', type: 'text', placeholder: 'e.g. pdf tools' },
-    { key: 'brand', label: 'Brand name', type: 'text', placeholder: 'e.g. PDF Forge' },
+    { key: 'brand', label: 'Brand name', type: 'text', placeholder: 'e.g. ilovetopdf' },
   ], (v) => {
     const k = v.kw || 'Your Topic', b = v.brand || 'Your Brand';
     return [
